@@ -1,0 +1,14 @@
+    # Basic analysis
+    python pcap_analyzer.py capture.pcap
+    
+    # Verbose output with security scan
+    python pcap_analyzer.py capture.pcap -v --security-scan
+    
+    # Export to JSON and generate plots
+    python pcap_analyzer.py capture.pcap --export json --generate-plots
+    
+    # Complete analysis with all exports
+    python pcap_analyzer.py capture.pcap --export all --security-scan --generate-plots -v
+    
+    # Quick statistics only (faster)
+    python pcap_analyzer.py capture.pcap --quick

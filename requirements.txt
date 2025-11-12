@@ -1,0 +1,4 @@
+scapy>=2.4.5
+requests>=2.25.1
+ipwhois>=1.2.0
+matplotlib>=3.3.4
