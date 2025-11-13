@@ -1,14 +1,75 @@
-    # Basic analysis
-    python pcap_analyzer.py capture.pcap
-    
-    # Verbose output with security scan
-    python pcap_analyzer.py capture.pcap -v --security-scan
-    
-    # Export to JSON and generate plots
-    python pcap_analyzer.py capture.pcap --export json --generate-plots
-    
-    # Complete analysis with all exports
-    python pcap_analyzer.py capture.pcap --export all --security-scan --generate-plots -v
-    
-    # Quick statistics only (faster)
-    python pcap_analyzer.py capture.pcap --quick
+# Basic analysis with console output only
+python pcap_analyzer.py capture.pcap
+
+# Verbose analysis with progress indicators
+python pcap_analyzer.py capture.pcap -v
+
+# Quick mode (faster, basic stats only)
+python pcap_analyzer.py capture.pcap --quick
+
+# Export to JSON only
+python pcap_analyzer.py capture.pcap --export json
+
+# Export JSON with verbose output
+python pcap_analyzer.py capture.pcap --export json -v
+
+# Export JSON with security scan
+python pcap_analyzer.py capture.pcap --export json --security-scan
+
+# Export to CSV only
+python pcap_analyzer.py capture.pcap --export csv
+
+# Export CSV with verbose output
+python pcap_analyzer.py capture.pcap --export csv -v
+
+# Export CSV with security scan
+python pcap_analyzer.py capture.pcap --export csv --security-scan
+
+# Export to HTML only
+python pcap_analyzer.py capture.pcap --export html
+
+# Export HTML with verbose output
+python pcap_analyzer.py capture.pcap --export html -v
+
+# Export HTML with security scan
+python pcap_analyzer.py capture.pcap --export html --security-scan
+
+# Export to JSON, CSV, and HTML
+python pcap_analyzer.py capture.pcap --export all
+
+# Export all formats with verbose output
+python pcap_analyzer.py capture.pcap --export all -v
+
+# Export all formats with security scan
+python pcap_analyzer.py capture.pcap --export all --security-scan
+
+# Generate plots only
+python pcap_analyzer.py capture.pcap --generate-plots
+
+# Generate plots with verbose output
+python pcap_analyzer.py capture.pcap --generate-plots -v
+
+# Generate plots with security scan
+python pcap_analyzer.py capture.pcap --generate-plots --security-scan
+
+# Generate plots and export all formats
+python pcap_analyzer.py capture.pcap --generate-plots --export all
+
+# Generate plots, export all formats, with security scan and verbose
+python pcap_analyzer.py capture.pcap --generate-plots --export all --security-scan -v
+
+# Security scan only (console output)
+python pcap_analyzer.py capture.pcap --security-scan
+
+# Security scan with verbose output
+python pcap_analyzer.py capture.pcap --security-scan -v
+
+# Security scan with all exports
+python pcap_analyzer.py capture.pcap --security-scan --export all
+
+
+# The ultimate command - everything enabled
+python pcap_analyzer.py capture.pcap --security-scan --generate-plots --export all -v
+
+# Complete analysis in quick mode (faster but less detailed)
+python pcap_analyzer.py capture.pcap --security-scan --generate-plots --export all --quick -v

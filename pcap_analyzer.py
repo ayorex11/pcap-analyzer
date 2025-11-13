@@ -1,10 +1,10 @@
 """
-Enhanced Advanced PCAP File Analyzer
+Enhanced Advanced PCAP File Analyzer v2.0
 Analyzes network packet capture files with comprehensive statistics, 
-security detection, and export capabilities
+advanced DNS analysis, security detection, and export capabilities
 
 Installation:
-    pip install scapy requests matplotlib ipwhois
+    pip install scapy requests matplotlib ipwhois tldextract
 """
 
 import argparse
@@ -13,17 +13,17 @@ import json
 import csv
 import sys
 import os
+import math
 from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
 import requests
-from scapy.all import rdpcap, IP, TCP, UDP, ICMP, ARP, DNS, DNSQR, Raw
+from scapy.all import rdpcap, IP, TCP, UDP, ICMP, ARP, DNS, DNSQR, DNSRR, Raw
 from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
 from scapy.layers.dhcp import DHCP
 from scapy.layers.ntp import NTP
 from scapy.error import Scapy_Exception
 import warnings
-import math
 from urllib.parse import parse_qs, urlparse
 
 warnings.filterwarnings('ignore')
@@ -38,10 +38,439 @@ except ImportError:
 try:
     import matplotlib.pyplot as plt
     import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
+    matplotlib.use('Agg')
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
+
+try:
+    import tldextract
+    TLDEXTRACT_AVAILABLE = True
+except ImportError:
+    TLDEXTRACT_AVAILABLE = False
+
+
+class AdvancedDNSAnalyzer:
+    """Advanced DNS traffic analyzer"""
+    
+    # Known malicious/suspicious TLDs
+    SUSPICIOUS_TLDS = {
+        'tk', 'ml', 'ga', 'cf', 'gq', 'pw', 'cc', 'ws', 'top', 'work',
+        'click', 'link', 'xyz', 'date', 'racing', 'stream'
+    }
+    
+    # Common legitimate domains for whitelist
+    WHITELIST_DOMAINS = {
+        'google.com', 'googleapis.com', 'gstatic.com', 'amazon.com',
+        'microsoft.com', 'apple.com', 'facebook.com', 'cloudfront.net',
+        'akamai.net', 'cloudflare.com', 'windows.com', 'live.com'
+    }
+    
+    def __init__(self):
+        self.queries = []
+        self.responses = []
+        self.query_types = Counter()
+        self.response_codes = Counter()
+        self.tld_stats = Counter()
+        self.domain_to_ips = defaultdict(list)
+        self.ip_to_domains = defaultdict(list)
+        self.query_lengths = []
+        self.suspicious_queries = []
+        
+    def analyze_packet(self, packet):
+        """Analyze DNS packet"""
+        if not packet.haslayer(DNS):
+            return
+        
+        dns_layer = packet[DNS]
+        
+        # Query analysis
+        if dns_layer.qr == 0 and packet.haslayer(DNSQR):
+            self._analyze_query(packet, dns_layer)
+        
+        # Response analysis
+        elif dns_layer.qr == 1:
+            self._analyze_response(packet, dns_layer)
+    
+    def _analyze_query(self, packet, dns_layer):
+        """Analyze DNS query"""
+        try:
+            qname = packet[DNSQR].qname.decode('utf-8', errors='ignore').rstrip('.')
+            qtype = packet[DNSQR].qtype
+            
+            if not qname:
+                return
+            
+            # Record query
+            query_info = {
+                'domain': qname,
+                'type': self._get_query_type_name(qtype),
+                'type_code': qtype,
+                'timestamp': datetime.fromtimestamp(float(packet.time)),
+                'src_ip': packet[IP].src if packet.haslayer(IP) else 'Unknown'
+            }
+            
+            self.queries.append(query_info)
+            self.query_types[query_info['type']] += 1
+            self.query_lengths.append(len(qname))
+            
+            # TLD analysis
+            if TLDEXTRACT_AVAILABLE:
+                extracted = tldextract.extract(qname)
+                if extracted.suffix:
+                    self.tld_stats[extracted.suffix] += 1
+            else:
+                # Fallback TLD extraction
+                parts = qname.split('.')
+                if len(parts) >= 2:
+                    self.tld_stats[parts[-1]] += 1
+            
+            # Suspicious domain detection
+            self._check_suspicious_domain(qname, query_info)
+            
+        except Exception:
+            pass
+    
+    def _analyze_response(self, packet, dns_layer):
+        """Analyze DNS response"""
+        try:
+            rcode = dns_layer.rcode
+            self.response_codes[self._get_rcode_name(rcode)] += 1
+            
+            # Extract resolved IPs
+            if packet.haslayer(DNSRR):
+                qname = None
+                if packet.haslayer(DNSQR):
+                    qname = packet[DNSQR].qname.decode('utf-8', errors='ignore').rstrip('.')
+                
+                # Process all answer records
+                for i in range(dns_layer.ancount):
+                    try:
+                        dnsrr = packet[DNSRR][i] if dns_layer.ancount > 1 else packet[DNSRR]
+                        
+                        if dnsrr.type == 1:  # A record
+                            ip = dnsrr.rdata
+                            if qname:
+                                self.domain_to_ips[qname].append(ip)
+                                self.ip_to_domains[ip].append(qname)
+                    except Exception:
+                        continue
+                
+                response_info = {
+                    'domain': qname,
+                    'rcode': self._get_rcode_name(rcode),
+                    'timestamp': datetime.fromtimestamp(float(packet.time)),
+                    'ttl': packet[DNSRR].ttl if hasattr(packet[DNSRR], 'ttl') else 0
+                }
+                
+                self.responses.append(response_info)
+                
+        except Exception:
+            pass
+    
+    def _check_suspicious_domain(self, domain: str, query_info: dict):
+        """Check if domain exhibits suspicious characteristics"""
+        suspicious_reasons = []
+        
+        # Skip whitelisted domains
+        if any(domain.endswith(whitelist) for whitelist in self.WHITELIST_DOMAINS):
+            return
+        
+        # 1. Check TLD
+        if TLDEXTRACT_AVAILABLE:
+            extracted = tldextract.extract(domain)
+            if extracted.suffix in self.SUSPICIOUS_TLDS:
+                suspicious_reasons.append(f"Suspicious TLD: {extracted.suffix}")
+        
+        # 2. Length check (unusually long domains can indicate tunneling)
+        if len(domain) > 50:
+            suspicious_reasons.append(f"Unusually long domain: {len(domain)} chars")
+        
+        # 3. Entropy check (DGA detection)
+        entropy = self._calculate_entropy(domain)
+        if entropy > 4.5:  # High randomness
+            suspicious_reasons.append(f"High entropy: {entropy:.2f} (possible DGA)")
+        
+        # 4. Subdomain depth
+        subdomain_count = domain.count('.')
+        if subdomain_count > 4:
+            suspicious_reasons.append(f"Deep subdomain nesting: {subdomain_count} levels")
+        
+        # 5. Numeric domain check
+        if re.search(r'\d{8,}', domain):
+            suspicious_reasons.append("Contains long numeric sequence")
+        
+        # 6. Character patterns (consonant clusters)
+        consonant_clusters = re.findall(r'[bcdfghjklmnpqrstvwxyz]{5,}', domain.lower())
+        if consonant_clusters:
+            suspicious_reasons.append(f"Unusual consonant clusters: {consonant_clusters[:2]}")
+        
+        # 7. Hex-like patterns
+        if re.match(r'^[a-f0-9]{20,}\.', domain):
+            suspicious_reasons.append("Hex-like subdomain pattern")
+        
+        # 8. Base64-like patterns
+        if re.search(r'[A-Za-z0-9+/]{30,}', domain):
+            suspicious_reasons.append("Base64-like encoding detected")
+        
+        if suspicious_reasons:
+            self.suspicious_queries.append({
+                **query_info,
+                'reasons': suspicious_reasons,
+                'entropy': entropy,
+                'length': len(domain)
+            })
+    
+    def detect_dns_tunneling(self) -> List[Dict]:
+        """Detect potential DNS tunneling based on query patterns"""
+        tunneling_suspects = []
+        
+        # Group queries by domain
+        domain_queries = defaultdict(list)
+        for query in self.queries:
+            base_domain = self._get_base_domain(query['domain'])
+            domain_queries[base_domain].append(query)
+        
+        for base_domain, queries in domain_queries.items():
+            if len(queries) < 10:  # Need sufficient samples
+                continue
+            
+            # Calculate average subdomain length
+            avg_length = sum(len(q['domain']) for q in queries) / len(queries)
+            
+            # Calculate entropy variance
+            entropies = [self._calculate_entropy(q['domain']) for q in queries]
+            avg_entropy = sum(entropies) / len(entropies)
+            
+            # Check for TXT queries (common in DNS tunneling)
+            txt_queries = sum(1 for q in queries if q['type'] == 'TXT')
+            txt_ratio = txt_queries / len(queries)
+            
+            # Tunneling indicators
+            indicators = []
+            score = 0
+            
+            if avg_length > 40:
+                indicators.append(f"Long average query length: {avg_length:.1f}")
+                score += 2
+            
+            if avg_entropy > 4.0:
+                indicators.append(f"High average entropy: {avg_entropy:.2f}")
+                score += 2
+            
+            if txt_ratio > 0.3:
+                indicators.append(f"High TXT query ratio: {txt_ratio:.1%}")
+                score += 2
+            
+            if len(queries) > 100:
+                indicators.append(f"High query volume: {len(queries)}")
+                score += 1
+            
+            # Check for regular intervals (beaconing)
+            if len(queries) > 20:
+                timestamps = [q['timestamp'] for q in queries]
+                intervals = [(timestamps[i+1] - timestamps[i]).total_seconds() 
+                            for i in range(len(timestamps)-1)]
+                if intervals:
+                    avg_interval = sum(intervals) / len(intervals)
+                    variance = sum((x - avg_interval)**2 for x in intervals) / len(intervals)
+                    if variance < 100 and avg_interval < 60:  # Regular, frequent queries
+                        indicators.append(f"Regular beaconing: ~{avg_interval:.1f}s intervals")
+                        score += 3
+            
+            if score >= 4:  # Threshold for suspicion
+                tunneling_suspects.append({
+                    'domain': base_domain,
+                    'query_count': len(queries),
+                    'avg_length': avg_length,
+                    'avg_entropy': avg_entropy,
+                    'txt_ratio': txt_ratio,
+                    'indicators': indicators,
+                    'severity': 'HIGH' if score >= 6 else 'MEDIUM',
+                    'score': score
+                })
+        
+        return sorted(tunneling_suspects, key=lambda x: x['score'], reverse=True)
+    
+    def detect_fast_flux(self) -> List[Dict]:
+        """Detect fast-flux DNS patterns"""
+        fast_flux_suspects = []
+        
+        for domain, ips in self.domain_to_ips.items():
+            unique_ips = len(set(ips))
+            
+            # Fast-flux typically involves many IPs
+            if unique_ips > 10:
+                # Check TTL values from responses
+                domain_responses = [r for r in self.responses if r.get('domain') == domain]
+                low_ttl_count = sum(1 for r in domain_responses if r.get('ttl', 3600) < 300)
+                
+                fast_flux_suspects.append({
+                    'domain': domain,
+                    'unique_ips': unique_ips,
+                    'total_resolutions': len(ips),
+                    'low_ttl_responses': low_ttl_count,
+                    'ips_sample': list(set(ips))[:10],
+                    'severity': 'HIGH' if unique_ips > 50 else 'MEDIUM'
+                })
+        
+        return sorted(fast_flux_suspects, key=lambda x: x['unique_ips'], reverse=True)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive DNS statistics"""
+        stats = {
+            'total_queries': len(self.queries),
+            'total_responses': len(self.responses),
+            'query_types': dict(self.query_types.most_common()),
+            'response_codes': dict(self.response_codes.most_common()),
+            'tld_distribution': dict(self.tld_stats.most_common(20)),
+            'suspicious_queries': self.suspicious_queries,
+            'top_queried_domains': self._get_top_domains(),
+            'dns_tunneling_suspects': self.detect_dns_tunneling(),
+            'fast_flux_suspects': self.detect_fast_flux(),
+            'query_length_stats': self._get_length_stats(),
+            'unique_domains': len(set(q['domain'] for q in self.queries)),
+            'domains_with_multiple_ips': self._get_multi_ip_domains()
+        }
+        
+        return stats
+    
+    def _get_top_domains(self, limit: int = 20) -> List[Tuple[str, int]]:
+        """Get most queried domains"""
+        domain_counts = Counter(q['domain'] for q in self.queries)
+        return domain_counts.most_common(limit)
+    
+    def _get_multi_ip_domains(self) -> List[Dict]:
+        """Get domains resolving to multiple IPs"""
+        multi_ip = []
+        for domain, ips in self.domain_to_ips.items():
+            unique_ips = list(set(ips))
+            if len(unique_ips) > 1:
+                multi_ip.append({
+                    'domain': domain,
+                    'ip_count': len(unique_ips),
+                    'ips': unique_ips[:10]  # Limit for display
+                })
+        
+        return sorted(multi_ip, key=lambda x: x['ip_count'], reverse=True)[:20]
+    
+    def _get_length_stats(self) -> Dict[str, float]:
+        """Get query length statistics"""
+        if not self.query_lengths:
+            return {}
+        
+        return {
+            'min': min(self.query_lengths),
+            'max': max(self.query_lengths),
+            'avg': sum(self.query_lengths) / len(self.query_lengths),
+            'median': sorted(self.query_lengths)[len(self.query_lengths) // 2]
+        }
+    
+    @staticmethod
+    def _calculate_entropy(string: str) -> float:
+        """Calculate Shannon entropy of a string"""
+        if not string:
+            return 0.0
+        
+        # Remove common TLD to focus on domain name
+        string = re.sub(r'\.(com|net|org|edu|gov|mil)$', '', string.lower())
+        
+        entropy = 0.0
+        for char in set(string):
+            freq = string.count(char) / len(string)
+            entropy -= freq * math.log2(freq)
+        
+        return entropy
+    
+    @staticmethod
+    def _get_base_domain(domain: str) -> str:
+        """Extract base domain from full domain"""
+        if TLDEXTRACT_AVAILABLE:
+            extracted = tldextract.extract(domain)
+            return f"{extracted.domain}.{extracted.suffix}"
+        else:
+            parts = domain.split('.')
+            if len(parts) >= 2:
+                return '.'.join(parts[-2:])
+            return domain
+    
+    @staticmethod
+    def _get_query_type_name(qtype: int) -> str:
+        """Convert DNS query type code to name"""
+        types = {
+            1: 'A', 2: 'NS', 5: 'CNAME', 6: 'SOA', 12: 'PTR',
+            15: 'MX', 16: 'TXT', 28: 'AAAA', 33: 'SRV', 255: 'ANY'
+        }
+        return types.get(qtype, f'TYPE{qtype}')
+    
+    @staticmethod
+    def _get_rcode_name(rcode: int) -> str:
+        """Convert DNS response code to name"""
+        rcodes = {
+            0: 'NOERROR', 1: 'FORMERR', 2: 'SERVFAIL', 3: 'NXDOMAIN',
+            4: 'NOTIMP', 5: 'REFUSED'
+        }
+        return rcodes.get(rcode, f'RCODE{rcode}')
+
+
+class BeaconDetector:
+    """Detect C2 beaconing patterns"""
+    
+    def __init__(self, threshold_variance: float = 0.1):
+        self.threshold_variance = threshold_variance
+        self.ip_connections = defaultdict(list)
+    
+    def add_packet(self, packet):
+        """Track packet for beacon detection"""
+        if packet.haslayer(IP) and packet.haslayer(TCP):
+            src_ip = packet[IP].src
+            dst_ip = packet[IP].dst
+            dst_port = packet[TCP].dport
+            timestamp = float(packet.time)
+            
+            key = (src_ip, dst_ip, dst_port)
+            self.ip_connections[key].append(timestamp)
+    
+    def detect_beacons(self) -> List[Dict]:
+        """Detect beaconing behavior"""
+        beacons = []
+        
+        for (src_ip, dst_ip, dst_port), timestamps in self.ip_connections.items():
+            if len(timestamps) < 10:  # Need enough samples
+                continue
+            
+            # Calculate intervals
+            timestamps = sorted(timestamps)
+            intervals = [timestamps[i+1] - timestamps[i] for i in range(len(timestamps)-1)]
+            
+            if not intervals:
+                continue
+            
+            avg_interval = sum(intervals) / len(intervals)
+            
+            # Skip very short intervals (likely bulk transfer)
+            if avg_interval < 1:
+                continue
+            
+            # Calculate coefficient of variation
+            variance = sum((x - avg_interval)**2 for x in intervals) / len(intervals)
+            std_dev = math.sqrt(variance)
+            cv = std_dev / avg_interval if avg_interval > 0 else 0
+            
+            # Low variance indicates regular beaconing
+            if cv < self.threshold_variance and avg_interval < 3600:
+                beacons.append({
+                    'src_ip': src_ip,
+                    'dst_ip': dst_ip,
+                    'dst_port': dst_port,
+                    'connection_count': len(timestamps),
+                    'avg_interval_sec': avg_interval,
+                    'coefficient_variation': cv,
+                    'duration_sec': timestamps[-1] - timestamps[0],
+                    'severity': 'HIGH' if cv < 0.05 and avg_interval < 60 else 'MEDIUM'
+                })
+        
+        return sorted(beacons, key=lambda x: x['coefficient_variation'])
 
 
 class PCAPAnalyzer:
@@ -53,6 +482,8 @@ class PCAPAnalyzer:
         self.quick_mode = quick_mode
         self.packets = None
         self.stats = None
+        self.dns_analyzer = AdvancedDNSAnalyzer()
+        self.beacon_detector = BeaconDetector()
         
     def load_packets(self) -> bool:
         """Load packets from PCAP file with error handling"""
@@ -77,9 +508,7 @@ class PCAPAnalyzer:
             return False
     
     def analyze(self) -> Dict[str, Any]:
-        """
-        Perform comprehensive analysis of loaded packets
-        """
+        """Perform comprehensive analysis of loaded packets"""
         if not self.packets:
             return {}
         
@@ -91,13 +520,14 @@ class PCAPAnalyzer:
             'ports': {'tcp': Counter(), 'udp': Counter()},
             'conversations': defaultdict(int),
             'packet_sizes': [],
-            'dns_queries': [],
             'timeline': {},
             'suspicious_activities': {},
             'http_analysis': {},
             'ip_enrichment': {},
             'tcp_flags': Counter(),
-            'payload_analysis': {}
+            'payload_analysis': {},
+            'dns_analysis': {},
+            'beacon_analysis': []
         }
         
         # Analyze packets
@@ -106,6 +536,19 @@ class PCAPAnalyzer:
                 print(f"  Processing packet {idx}/{len(self.packets)}...")
             
             self._analyze_packet(packet)
+            
+            # DNS analysis
+            if packet.haslayer(DNS):
+                self.dns_analyzer.analyze_packet(packet)
+            
+            # Beacon detection
+            if not self.quick_mode:
+                self.beacon_detector.add_packet(packet)
+        
+        # Get DNS statistics
+        if self.verbose:
+            print("🔍 Analyzing DNS traffic...")
+        self.stats['dns_analysis'] = self.dns_analyzer.get_statistics()
         
         # Enhanced analysis
         if self.verbose:
@@ -126,6 +569,10 @@ class PCAPAnalyzer:
             self.stats['payload_analysis'] = self._analyze_payloads()
             
             if self.verbose:
+                print("📡 Detecting beacons...")
+            self.stats['beacon_analysis'] = self.beacon_detector.detect_beacons()
+            
+            if self.verbose:
                 print("🌍 Enriching IP information...")
             top_ips = set(
                 list(dict(self.stats['ip_sources'].most_common(10)).keys()) + 
@@ -143,7 +590,6 @@ class PCAPAnalyzer:
             tcp_layer = packet[TCP]
             if tcp_layer.dport:
                 self.stats['ports']['tcp'][tcp_layer.dport] += 1
-            # TCP flags analysis
             flags = tcp_layer.sprintf('%TCP.flags%')
             self.stats['tcp_flags'][flags] += 1
             
@@ -168,25 +614,10 @@ class PCAPAnalyzer:
             self.stats['ip_sources'][src_ip] += 1
             self.stats['ip_destinations'][dst_ip] += 1
             
-            # Track conversations (bidirectional communication)
             conversation = tuple(sorted([src_ip, dst_ip]))
             self.stats['conversations'][conversation] += 1
             
-            # Packet size
             self.stats['packet_sizes'].append(len(packet))
-        
-        # DNS queries extraction
-        if packet.haslayer(DNS) and packet.haslayer(DNSQR):
-            try:
-                qr_flag = packet[DNS].qr  # 0 = query, 1 = response
-                if qr_flag == 0:  # Only queries
-                    qname = packet[DNSQR].qname
-                    if qname:
-                        query = qname.decode('utf-8', errors='ignore').rstrip('.')
-                        if query:
-                            self.stats['dns_queries'].append(query)
-            except Exception:
-                pass
     
     def _analyze_timeline(self) -> Dict[str, Any]:
         """Analyze packet timing and detect traffic bursts"""
@@ -215,33 +646,10 @@ class PCAPAnalyzer:
         }
         
         # Group packets into 1-minute intervals
-        interval = 60  # seconds
+        interval = 60
         for timestamp in timestamps:
             bucket = int((timestamp - min_time) / interval)
             timeline['time_buckets'][bucket] += 1
-        
-        # Detect traffic bursts (>100 packets in 10 seconds)
-        if len(timestamps) > 1 and not self.quick_mode:
-            burst_window = 10  # seconds
-            burst_threshold = 100
-            
-            window_start = 0
-            for i in range(len(timestamps)):
-                # Move window forward
-                while window_start < i and timestamps[i] - timestamps[window_start] > burst_window:
-                    window_start += 1
-                
-                packets_in_window = i - window_start + 1
-                
-                if packets_in_window > burst_threshold:
-                    # Check if this is a new burst
-                    if not timeline['bursts'] or timestamps[i] - timeline['bursts'][-1]['end_time'] > burst_window:
-                        timeline['bursts'].append({
-                            'start': datetime.fromtimestamp(timestamps[window_start]),
-                            'end_time': timestamps[i],
-                            'duration': timestamps[i] - timestamps[window_start],
-                            'packet_count': packets_in_window
-                        })
         
         return timeline
     
@@ -250,7 +658,6 @@ class PCAPAnalyzer:
         suspicious = {
             'port_scan': [],
             'syn_flood': [],
-            'dns_tunneling': [],
             'unusual_ports': [],
             'data_exfiltration': [],
             'high_frequency_ips': [],
@@ -258,14 +665,12 @@ class PCAPAnalyzer:
             'arp_spoofing': []
         }
         
-        # Suspicious ports commonly used by malware
         suspicious_ports = {
             4444, 31337, 1337, 12345, 54321, 9999, 666, 999, 1338, 1339,
             9998, 9997, 6667, 6668, 6669, 7000, 12346, 27374, 6711, 6712
         }
         
-        # Tracking dictionaries
-        src_dst_ports = defaultdict(set)  # Track unique ports per source
+        src_dst_ports = defaultdict(set)
         syn_packets = defaultdict(int)
         icmp_packets = defaultdict(int)
         arp_requests = []
@@ -277,17 +682,14 @@ class PCAPAnalyzer:
                 dst_ip = packet[IP].dst
                 packet_counts_per_ip[src_ip] += 1
                 
-                # Port scanning detection
                 if packet.haslayer(TCP):
                     dst_port = packet[TCP].dport
                     src_dst_ports[src_ip].add((dst_ip, dst_port))
                     
-                    # SYN flood detection
                     flags = packet[TCP].sprintf('%TCP.flags%')
                     if 'S' in flags and 'A' not in flags:
                         syn_packets[src_ip] += 1
                     
-                    # Unusual port detection
                     if dst_port in suspicious_ports:
                         suspicious['unusual_ports'].append({
                             'source': src_ip,
@@ -297,16 +699,6 @@ class PCAPAnalyzer:
                             'timestamp': datetime.fromtimestamp(float(packet.time))
                         })
                 
-                # DNS tunneling detection (unusually large DNS packets)
-                if packet.haslayer(DNS) and len(packet) > 512:
-                    suspicious['dns_tunneling'].append({
-                        'source': src_ip,
-                        'destination': dst_ip,
-                        'packet_size': len(packet),
-                        'timestamp': datetime.fromtimestamp(float(packet.time))
-                    })
-                
-                # Data exfiltration detection
                 if len(packet) > 1400 and self._is_external_ip(dst_ip):
                     suspicious['data_exfiltration'].append({
                         'source': src_ip,
@@ -315,21 +707,18 @@ class PCAPAnalyzer:
                         'timestamp': datetime.fromtimestamp(float(packet.time))
                     })
                 
-                # ICMP flood detection
                 if packet.haslayer(ICMP):
                     icmp_packets[src_ip] += 1
             
-            # ARP spoofing detection
             if packet.haslayer(ARP):
                 arp_requests.append({
                     'src_mac': packet[ARP].hwsrc,
                     'src_ip': packet[ARP].psrc,
                     'dst_ip': packet[ARP].pdst,
-                    'op': packet[ARP].op  # 1=request, 2=reply
+                    'op': packet[ARP].op
                 })
         
-        # Analyze collected data
-        # Port scan detection (>50 unique destination ports from single source)
+        # Port scan detection
         for src_ip, dst_ports in src_dst_ports.items():
             if len(dst_ports) > 50:
                 suspicious['port_scan'].append({
@@ -338,7 +727,7 @@ class PCAPAnalyzer:
                     'severity': 'HIGH' if len(dst_ports) > 100 else 'MEDIUM'
                 })
         
-        # SYN flood detection (>1000 SYN packets from single source)
+        # SYN flood detection
         for src_ip, count in syn_packets.items():
             if count > 1000:
                 suspicious['syn_flood'].append({
@@ -359,7 +748,7 @@ class PCAPAnalyzer:
                         'ratio': f"{count/avg_packets:.1f}x"
                     })
         
-        # ICMP flood detection (>500 ICMP packets from single source)
+        # ICMP flood detection
         for src_ip, count in icmp_packets.items():
             if count > 500:
                 suspicious['icmp_flood'].append({
@@ -367,7 +756,7 @@ class PCAPAnalyzer:
                     'icmp_count': count
                 })
         
-        # ARP spoofing detection (multiple IPs claiming same MAC or same IP with different MACs)
+        # ARP spoofing detection
         if arp_requests:
             mac_to_ips = defaultdict(set)
             ip_to_macs = defaultdict(set)
@@ -406,18 +795,16 @@ class PCAPAnalyzer:
             'suspicious_requests': []
         }
         
-        # Patterns for detecting suspicious HTTP activity
         suspicious_patterns = [
-            r'\.\./',  # Directory traversal
-            r'<script',  # XSS attempts
-            r'union.*select',  # SQL injection
-            r'exec\(',  # Command injection
-            r'eval\(',  # Code injection
+            r'\.\./',
+            r'<script',
+            r'union.*select',
+            r'exec\(',
+            r'eval\(',
         ]
         
         for packet in self.packets:
             try:
-                # HTTP Requests
                 if packet.haslayer(HTTPRequest):
                     http_layer = packet[HTTPRequest]
                     
@@ -428,14 +815,12 @@ class PCAPAnalyzer:
                     http_data['hosts'][host] += 1
                     http_data['methods'][method] += 1
                     
-                    # Extract User-Agent
                     user_agent = 'Unknown'
                     if hasattr(http_layer, 'User_Agent'):
                         user_agent = http_layer.User_Agent.decode('utf-8', errors='ignore')
                     
                     http_data['user_agents'][user_agent] += 1
                     
-                    # Check for suspicious patterns
                     full_request = f"{method} {path}"
                     if packet.haslayer(Raw):
                         full_request += packet[Raw].load.decode('utf-8', errors='ignore')
@@ -461,7 +846,6 @@ class PCAPAnalyzer:
                         'timestamp': datetime.fromtimestamp(float(packet.time))
                     })
                 
-                # HTTP Responses
                 if packet.haslayer(HTTPResponse):
                     http_layer = packet[HTTPResponse]
                     
@@ -490,7 +874,6 @@ class PCAPAnalyzer:
             'file_transfers': []
         }
         
-        # Patterns for credentials
         credential_patterns = [
             (r'password[=:]\s*(\S+)', 'password'),
             (r'user(?:name)?[=:]\s*(\S+)', 'username'),
@@ -498,19 +881,16 @@ class PCAPAnalyzer:
             (r'token[=:]\s*(\S+)', 'token'),
         ]
         
-        for packet in self.packets[:10000]:  # Limit for performance
+        for packet in self.packets[:10000]:
             try:
                 if packet.haslayer(Raw):
                     payload = packet[Raw].load
                     
-                    # Check for encrypted traffic (high entropy)
                     if len(payload) > 100:
-                        # Simple entropy check - count unique bytes
                         unique_bytes = len(set(payload))
-                        if unique_bytes > len(payload) * 0.7:  # High randomness
+                        if unique_bytes > len(payload) * 0.7:
                             payload_info['encrypted_traffic'] += 1
                     
-                    # Look for credentials in plaintext
                     try:
                         text_payload = payload.decode('utf-8', errors='ignore')
                         
@@ -534,8 +914,7 @@ class PCAPAnalyzer:
         """Add geolocation and ASN information for IPs"""
         enriched_ips = {}
         
-        for ip in list(ip_list)[:15]:  # Limit API calls
-            # Skip private IPs
+        for ip in list(ip_list)[:15]:
             if not self._is_external_ip(ip):
                 enriched_ips[ip] = {
                     'country': 'Private',
@@ -547,11 +926,10 @@ class PCAPAnalyzer:
                 continue
             
             try:
-                # Use free geolocation API with rate limiting
                 response = requests.get(
                     f'http://ip-api.com/json/{ip}',
                     timeout=3,
-                    headers={'User-Agent': 'PCAP-Analyzer/1.0'}
+                    headers={'User-Agent': 'PCAP-Analyzer/2.0'}
                 )
                 
                 if response.status_code == 200:
@@ -567,12 +945,9 @@ class PCAPAnalyzer:
                             'lon': data.get('lon')
                         }
                         continue
-            except requests.RequestException:
-                pass
             except Exception:
                 pass
             
-            # Fallback for failed lookups
             enriched_ips[ip] = {
                 'country': 'Unknown',
                 'city': 'Unknown',
@@ -589,16 +964,15 @@ class PCAPAnalyzer:
         try:
             parts = list(map(int, ip.split('.')))
             
-            # Check private ranges
             if parts[0] == 10:
                 return False
             if parts[0] == 172 and 16 <= parts[1] <= 31:
                 return False
             if parts[0] == 192 and parts[1] == 168:
                 return False
-            if parts[0] == 127:  # Loopback
+            if parts[0] == 127:
                 return False
-            if parts[0] == 169 and parts[1] == 254:  # Link-local
+            if parts[0] == 169 and parts[1] == 254:
                 return False
             
             return True
@@ -617,7 +991,7 @@ class ReportGenerator:
     def print_statistics(self) -> None:
         """Print formatted statistics to console"""
         print("\n" + "=" * 80)
-        print("ADVANCED PCAP ANALYSIS REPORT")
+        print("ADVANCED PCAP ANALYSIS REPORT v2.0")
         print("=" * 80)
         
         # Summary
@@ -636,11 +1010,85 @@ class ReportGenerator:
             bar = "█" * int(percentage / 2)
             print(f"  {protocol:8s}: {count:8,} ({percentage:5.2f}%) {bar}")
         
-        # TCP Flags
-        if self.stats.get('tcp_flags'):
-            print(f"\n🚩 TCP FLAGS DISTRIBUTION")
-            for flags, count in self.stats['tcp_flags'].most_common(10):
-                print(f"  {flags:8s}: {count:,}")
+        # DNS Analysis Section
+        if self.stats.get('dns_analysis'):
+            dns = self.stats['dns_analysis']
+            print(f"\n🔍 DNS ANALYSIS")
+            print(f"  Total DNS Queries: {dns.get('total_queries', 0):,}")
+            print(f"  Unique Domains Queried: {dns.get('unique_domains', 0):,}")
+            
+            # Query types
+            if dns.get('query_types'):
+                print(f"\n  DNS Query Types:")
+                for qtype, count in list(dns['query_types'].items())[:10]:
+                    print(f"    {qtype:8s}: {count:,}")
+            
+            # Response codes
+            if dns.get('response_codes'):
+                print(f"\n  DNS Response Codes:")
+                for rcode, count in dns['response_codes'].items():
+                    print(f"    {rcode:12s}: {count:,}")
+            
+            # TLD distribution
+            if dns.get('tld_distribution'):
+                print(f"\n  Top 15 TLDs:")
+                for tld, count in list(dns['tld_distribution'].items())[:15]:
+                    print(f"    .{tld:12s}: {count:,} queries")
+            
+            # Top queried domains
+            if dns.get('top_queried_domains'):
+                print(f"\n  Top 15 Queried Domains:")
+                for domain, count in dns['top_queried_domains'][:15]:
+                    print(f"    {domain[:60]:60s}: {count:,}")
+            
+            # Query length stats
+            if dns.get('query_length_stats'):
+                ql = dns['query_length_stats']
+                print(f"\n  Query Length Statistics:")
+                print(f"    Min: {ql.get('min', 0)} | Max: {ql.get('max', 0)} | Avg: {ql.get('avg', 0):.1f} | Median: {ql.get('median', 0)}")
+            
+            # Suspicious DNS queries
+            if dns.get('suspicious_queries'):
+                print(f"\n  ⚠️  Suspicious DNS Queries: {len(dns['suspicious_queries'])}")
+                for sq in dns['suspicious_queries'][:5]:
+                    print(f"    🚨 {sq['domain'][:60]}")
+                    print(f"       Entropy: {sq.get('entropy', 0):.2f} | Length: {sq.get('length', 0)}")
+                    print(f"       Reasons: {', '.join(sq.get('reasons', [])[:2])}")
+            
+            # DNS Tunneling
+            if dns.get('dns_tunneling_suspects'):
+                tunneling = dns['dns_tunneling_suspects']
+                if tunneling:
+                    print(f"\n  🚨 DNS TUNNELING SUSPECTS: {len(tunneling)}")
+                    for tunnel in tunneling[:5]:
+                        print(f"    Severity: {tunnel['severity']} | Domain: {tunnel['domain']}")
+                        print(f"    Queries: {tunnel['query_count']} | Avg Length: {tunnel['avg_length']:.1f}")
+                        print(f"    Indicators: {', '.join(tunnel['indicators'][:2])}")
+            
+            # Fast-Flux Detection
+            if dns.get('fast_flux_suspects'):
+                fast_flux = dns['fast_flux_suspects']
+                if fast_flux:
+                    print(f"\n  🚨 FAST-FLUX SUSPECTS: {len(fast_flux)}")
+                    for ff in fast_flux[:5]:
+                        print(f"    Domain: {ff['domain']}")
+                        print(f"    Unique IPs: {ff['unique_ips']} | Total Resolutions: {ff['total_resolutions']}")
+            
+            # Domains with multiple IPs
+            if dns.get('domains_with_multiple_ips'):
+                print(f"\n  Domains Resolving to Multiple IPs (Top 10):")
+                for item in dns['domains_with_multiple_ips'][:10]:
+                    print(f"    {item['domain'][:50]:50s}: {item['ip_count']} IPs")
+        
+        # Beacon Detection
+        if self.stats.get('beacon_analysis'):
+            beacons = self.stats['beacon_analysis']
+            if beacons:
+                print(f"\n📡 C2 BEACONING DETECTED: {len(beacons)}")
+                for beacon in beacons[:5]:
+                    print(f"  {beacon['src_ip']} -> {beacon['dst_ip']}:{beacon['dst_port']}")
+                    print(f"  Connections: {beacon['connection_count']} | Interval: {beacon['avg_interval_sec']:.1f}s")
+                    print(f"  CV: {beacon['coefficient_variation']:.3f} | Severity: {beacon['severity']}")
         
         # Top source IPs
         print(f"\n🌐 TOP 10 SOURCE IP ADDRESSES")
@@ -672,16 +1120,6 @@ class ReportGenerator:
                 service = self._get_service_name(port)
                 print(f"  Port {port:5d} ({service:10s}): {count:,} packets")
         
-        # Top conversations
-        print(f"\n💬 TOP 10 CONVERSATIONS")
-        sorted_convs = sorted(
-            self.stats['conversations'].items(),
-            key=lambda x: x[1],
-            reverse=True
-        )[:10]
-        for conversation, count in sorted_convs:
-            print(f"  {conversation[0]:15s} <-> {conversation[1]:15s}: {count:,} packets")
-        
         # Packet size statistics
         if self.stats['packet_sizes']:
             sizes = self.stats['packet_sizes']
@@ -691,59 +1129,52 @@ class ReportGenerator:
             print(f"  Maximum: {max(sizes):,} bytes")
             print(f"  Total Data: {sum(sizes):,} bytes ({sum(sizes)/(1024*1024):.2f} MB)")
         
-        # DNS queries
-        if self.stats['dns_queries']:
-            print(f"\n🔍 TOP 10 DNS QUERIES")
-            dns_counter = Counter(self.stats['dns_queries'])
-            for query, count in dns_counter.most_common(10):
-                print(f"  {query[:60]:60s}: {count:,} queries")
-        
-        # HTTP Analysis
-        if self.stats.get('http_analysis', {}).get('requests'):
-            http = self.stats['http_analysis']
-            print(f"\n🌐 HTTP TRAFFIC ANALYSIS")
-            print(f"  Total HTTP Requests: {len(http['requests']):,}")
-            print(f"  Unique Hosts: {len(http['hosts']):,}")
-            
-            if http['methods']:
-                print(f"  HTTP Methods:")
-                for method, count in http['methods'].most_common():
-                    print(f"    {method}: {count:,}")
-            
-            if http['status_codes']:
-                print(f"  HTTP Status Codes:")
-                for code, count in http['status_codes'].most_common(5):
-                    print(f"    {code}: {count:,}")
-            
-            if http.get('suspicious_requests'):
-                print(f"  ⚠️  Suspicious HTTP Requests: {len(http['suspicious_requests'])}")
-        
-        # Traffic bursts
-        if self.stats.get('timeline', {}).get('bursts'):
-            bursts = self.stats['timeline']['bursts']
-            print(f"\n⚡ TRAFFIC BURSTS DETECTED ({len(bursts)} total)")
-            for burst in bursts[:5]:
-                print(f"  {burst['start']}: {burst['packet_count']:,} packets in {burst['duration']:.2f}s")
-        
-        # Payload analysis
-        if self.stats.get('payload_analysis'):
-            payload = self.stats['payload_analysis']
-            print(f"\n🔐 PAYLOAD ANALYSIS")
-            print(f"  Encrypted Traffic Packets: {payload['encrypted_traffic']:,}")
-            if payload['plaintext_credentials']:
-                print(f"  ⚠️  Plaintext Credentials Found: {len(payload['plaintext_credentials'])}")
-        
         print("\n" + "=" * 80)
     
     def print_security_findings(self) -> None:
         """Print security-related findings"""
         suspicious = self.stats.get('suspicious_activities', {})
+        dns = self.stats.get('dns_analysis', {})
+        beacons = self.stats.get('beacon_analysis', [])
         
         print("\n" + "!" * 80)
         print("🔒 SECURITY FINDINGS")
         print("!" * 80)
         
         findings_count = 0
+        
+        # DNS-based threats
+        if dns.get('suspicious_queries'):
+            findings_count += len(dns['suspicious_queries'])
+            print(f"\n🚨 SUSPICIOUS DNS QUERIES: {len(dns['suspicious_queries'])}")
+            for finding in dns['suspicious_queries'][:10]:
+                print(f"  ⚠️  {finding['domain']}")
+                print(f"     Reasons: {', '.join(finding['reasons'][:3])}")
+        
+        if dns.get('dns_tunneling_suspects'):
+            findings_count += len(dns['dns_tunneling_suspects'])
+            print(f"\n🚨 DNS TUNNELING SUSPECTS: {len(dns['dns_tunneling_suspects'])}")
+            for finding in dns['dns_tunneling_suspects'][:5]:
+                severity = finding['severity']
+                emoji = "🔴" if severity == "HIGH" else "🟡"
+                print(f"  {emoji} Domain: {finding['domain']} | Severity: {severity}")
+                print(f"     Score: {finding['score']} | Queries: {finding['query_count']}")
+        
+        if dns.get('fast_flux_suspects'):
+            findings_count += len(dns['fast_flux_suspects'])
+            print(f"\n🚨 FAST-FLUX DNS: {len(dns['fast_flux_suspects'])}")
+            for finding in dns['fast_flux_suspects'][:5]:
+                print(f"  ⚠️  {finding['domain']}: {finding['unique_ips']} unique IPs")
+        
+        # Beaconing
+        if beacons:
+            findings_count += len(beacons)
+            print(f"\n🚨 C2 BEACONING DETECTED: {len(beacons)}")
+            for beacon in beacons[:5]:
+                severity = beacon['severity']
+                emoji = "🔴" if severity == "HIGH" else "🟡"
+                print(f"  {emoji} {beacon['src_ip']} -> {beacon['dst_ip']}:{beacon['dst_port']}")
+                print(f"     Interval: {beacon['avg_interval_sec']:.1f}s | CV: {beacon['coefficient_variation']:.3f}")
         
         # Port scans
         if suspicious.get('port_scan'):
@@ -761,13 +1192,6 @@ class ReportGenerator:
             for finding in suspicious['syn_flood'][:5]:
                 print(f"  🔴 IP: {finding['ip']} | SYN packets: {finding['syn_count']:,}")
         
-        # DNS tunneling
-        if suspicious.get('dns_tunneling'):
-            findings_count += len(suspicious['dns_tunneling'])
-            print(f"\n🚨 POTENTIAL DNS TUNNELING:")
-            for finding in suspicious['dns_tunneling'][:5]:
-                print(f"  ⚠️  {finding['source']} -> {finding['destination']} | Size: {finding['packet_size']} bytes")
-        
         # Unusual ports
         if suspicious.get('unusual_ports'):
             findings_count += len(suspicious['unusual_ports'])
@@ -782,38 +1206,6 @@ class ReportGenerator:
             for port, sources in list(unique_ports.items())[:5]:
                 print(f"  ⚠️  Port {port}: {len(sources)} unique sources")
         
-        # Data exfiltration
-        if suspicious.get('data_exfiltration'):
-            findings_count += len(suspicious['data_exfiltration'])
-            print(f"\n🚨 POTENTIAL DATA EXFILTRATION:")
-            total_size = sum(f['size'] for f in suspicious['data_exfiltration'])
-            print(f"  ⚠️  {len(suspicious['data_exfiltration'])} large outbound transfers | Total: {total_size:,} bytes")
-        
-        # High frequency IPs
-        if suspicious.get('high_frequency_ips'):
-            findings_count += len(suspicious['high_frequency_ips'])
-            print(f"\n🚨 HIGH FREQUENCY IP ADDRESSES:")
-            for finding in suspicious['high_frequency_ips'][:5]:
-                print(f"  ⚠️  IP: {finding['ip']} | Packets: {finding['packet_count']:,} ({finding['ratio']} avg)")
-        
-        # ICMP floods
-        if suspicious.get('icmp_flood'):
-            findings_count += len(suspicious['icmp_flood'])
-            print(f"\n🚨 ICMP FLOOD DETECTED:")
-            for finding in suspicious['icmp_flood'][:5]:
-                print(f"  ⚠️  IP: {finding['ip']} | ICMP packets: {finding['icmp_count']:,}")
-        
-        # ARP spoofing
-        if suspicious.get('arp_spoofing'):
-            findings_count += len(suspicious['arp_spoofing'])
-            print(f"\n🚨 POTENTIAL ARP SPOOFING:")
-            for finding in suspicious['arp_spoofing'][:5]:
-                print(f"  ⚠️  {finding['type']}")
-                if 'mac' in finding:
-                    print(f"     MAC: {finding['mac']} | IPs: {finding['claimed_ips']}")
-                else:
-                    print(f"     IP: {finding['ip']} | MACs: {finding['macs']}")
-        
         if findings_count == 0:
             print(f"\n✅ No suspicious activities detected.")
         else:
@@ -826,7 +1218,6 @@ class ReportGenerator:
         """Export statistics to JSON format"""
         output_file = f"{self.base_name}_analysis.json"
         
-        # Convert Counter and defaultdict objects for JSON serialization
         serializable_stats = self._make_serializable(self.stats)
         
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -843,7 +1234,6 @@ class ReportGenerator:
             writer = csv.writer(f)
             writer.writerow(['IP Address', 'Packet Count', 'Type', 'Country', 'City', 'ISP', 'ASN'])
             
-            # Source IPs
             for ip, count in self.stats['ip_sources'].most_common(100):
                 enrichment = self.stats.get('ip_enrichment', {}).get(ip, {})
                 writer.writerow([
@@ -854,7 +1244,6 @@ class ReportGenerator:
                     enrichment.get('asn', 'Unknown')
                 ])
             
-            # Destination IPs
             for ip, count in self.stats['ip_destinations'].most_common(100):
                 enrichment = self.stats.get('ip_enrichment', {}).get(ip, {})
                 writer.writerow([
@@ -877,7 +1266,7 @@ class ReportGenerator:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PCAP Analysis Report - {os.path.basename(self.filename)}</title>
+    <title>PCAP Analysis Report v2.0 - {os.path.basename(self.filename)}</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ 
@@ -887,7 +1276,7 @@ class ReportGenerator:
             background: #f5f5f5;
             padding: 20px;
         }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .container {{ max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
         h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-bottom: 30px; }}
         h2 {{ color: #34495e; margin-top: 30px; margin-bottom: 15px; padding: 10px; background: #ecf0f1; border-left: 4px solid #3498db; }}
         h3 {{ color: #555; margin-top: 20px; margin-bottom: 10px; }}
@@ -908,17 +1297,21 @@ class ReportGenerator:
         .metric {{ display: inline-block; margin: 10px 20px 10px 0; }}
         .metric-label {{ font-weight: bold; color: #555; }}
         .metric-value {{ color: #3498db; font-size: 1.2em; }}
-        .chart-container {{ margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 5px; }}
-        footer {{ margin-top: 40px; padding-top: 20px; border-top: 2px solid #ecf0f1; text-align: center; color: #7f8c8d; }}
         .alert {{ padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid; }}
         .alert-danger {{ background: #fee; border-color: #e74c3c; }}
         .alert-warning {{ background: #fef3cd; border-color: #f39c12; }}
         .alert-info {{ background: #d1ecf1; border-color: #3498db; }}
+        .alert-success {{ background: #d4edda; border-color: #27ae60; }}
+        footer {{ margin-top: 40px; padding-top: 20px; border-top: 2px solid #ecf0f1; text-align: center; color: #7f8c8d; }}
+        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }}
+        .card {{ background: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; }}
+        .card h4 {{ color: #2c3e50; margin-bottom: 10px; }}
+        .code {{ background: #2c3e50; color: #ecf0f1; padding: 10px; border-radius: 4px; font-family: monospace; margin: 10px 0; overflow-x: auto; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 PCAP Analysis Report</h1>
+        <h1>📊 PCAP Analysis Report v2.0</h1>
         
         <div class="summary">
             <h2 style="color: white; background: transparent; border: none; padding: 0; margin-bottom: 15px;">📋 Executive Summary</h2>
@@ -942,6 +1335,144 @@ class ReportGenerator:
         
         html_content += "</table>\n"
         
+        # DNS Analysis Section
+        if self.stats.get('dns_analysis'):
+            dns = self.stats['dns_analysis']
+            html_content += """
+        <h2>🔍 DNS Analysis</h2>
+        <div class="grid">
+            <div class="card">
+                <h4>DNS Overview</h4>
+"""
+            html_content += f"<p><strong>Total Queries:</strong> {dns.get('total_queries', 0):,}</p>\n"
+            html_content += f"<p><strong>Total Responses:</strong> {dns.get('total_responses', 0):,}</p>\n"
+            html_content += f"<p><strong>Unique Domains:</strong> {dns.get('unique_domains', 0):,}</p>\n"
+            html_content += "</div>\n"
+            
+            # Query length stats
+            if dns.get('query_length_stats'):
+                ql = dns['query_length_stats']
+                html_content += """
+            <div class="card">
+                <h4>Query Length Statistics</h4>
+"""
+                html_content += f"<p><strong>Min:</strong> {ql.get('min', 0)} chars</p>\n"
+                html_content += f"<p><strong>Max:</strong> {ql.get('max', 0)} chars</p>\n"
+                html_content += f"<p><strong>Average:</strong> {ql.get('avg', 0):.1f} chars</p>\n"
+                html_content += "</div>\n"
+            
+            html_content += "</div>\n"
+            
+            # Top TLDs
+            if dns.get('tld_distribution'):
+                html_content += """
+        <h3>Top Level Domains (TLDs)</h3>
+        <table>
+            <tr><th>TLD</th><th>Query Count</th></tr>
+"""
+                for tld, count in list(dns['tld_distribution'].items())[:20]:
+                    html_content += f"<tr><td>.{tld}</td><td>{count:,}</td></tr>\n"
+                html_content += "</table>\n"
+            
+            # Top queried domains
+            if dns.get('top_queried_domains'):
+                html_content += """
+        <h3>Most Queried Domains</h3>
+        <table>
+            <tr><th>Domain</th><th>Query Count</th></tr>
+"""
+                for domain, count in dns['top_queried_domains'][:20]:
+                    html_content += f"<tr><td>{domain}</td><td>{count:,}</td></tr>\n"
+                html_content += "</table>\n"
+            
+            # DNS Tunneling Suspects
+            if dns.get('dns_tunneling_suspects'):
+                tunneling = dns['dns_tunneling_suspects']
+                if tunneling:
+                    html_content += f"""
+        <h3>🚨 DNS Tunneling Suspects ({len(tunneling)})</h3>
+        <div class="alert alert-danger">
+            <strong>⚠️ Potential DNS tunneling detected!</strong> These domains exhibit characteristics commonly associated with data exfiltration or C2 communication via DNS.
+        </div>
+        <table>
+            <tr><th>Domain</th><th>Queries</th><th>Avg Length</th><th>Severity</th><th>Indicators</th></tr>
+"""
+                    for tunnel in tunneling[:10]:
+                        severity_class = f"badge-{tunnel['severity'].lower()}"
+                        indicators = '<br>'.join(tunnel['indicators'][:3])
+                        html_content += f"""<tr>
+                            <td>{tunnel['domain']}</td>
+                            <td>{tunnel['query_count']}</td>
+                            <td>{tunnel['avg_length']:.1f}</td>
+                            <td><span class="badge {severity_class}">{tunnel['severity']}</span></td>
+                            <td>{indicators}</td>
+                        </tr>\n"""
+                    html_content += "</table>\n"
+            
+            # Suspicious DNS Queries
+            if dns.get('suspicious_queries'):
+                html_content += f"""
+        <h3>⚠️ Suspicious DNS Queries ({len(dns['suspicious_queries'])})</h3>
+        <table>
+            <tr><th>Domain</th><th>Entropy</th><th>Length</th><th>Reasons</th></tr>
+"""
+                for sq in dns['suspicious_queries'][:20]:
+                    reasons = '<br>'.join(sq.get('reasons', [])[:3])
+                    html_content += f"""<tr>
+                        <td>{sq['domain']}</td>
+                        <td>{sq.get('entropy', 0):.2f}</td>
+                        <td>{sq.get('length', 0)}</td>
+                        <td>{reasons}</td>
+                    </tr>\n"""
+                html_content += "</table>\n"
+            
+            # Fast-Flux Detection
+            if dns.get('fast_flux_suspects'):
+                fast_flux = dns['fast_flux_suspects']
+                if fast_flux:
+                    html_content += f"""
+        <h3>🚨 Fast-Flux DNS Detected ({len(fast_flux)})</h3>
+        <div class="alert alert-warning">
+            <strong>⚠️ Fast-flux DNS patterns detected!</strong> These domains resolve to an unusually high number of IP addresses, which is characteristic of botnets and malware infrastructure.
+        </div>
+        <table>
+            <tr><th>Domain</th><th>Unique IPs</th><th>Total Resolutions</th><th>Severity</th></tr>
+"""
+                    for ff in fast_flux[:10]:
+                        severity_class = f"badge-{ff['severity'].lower()}"
+                        html_content += f"""<tr>
+                            <td>{ff['domain']}</td>
+                            <td>{ff['unique_ips']}</td>
+                            <td>{ff['total_resolutions']}</td>
+                            <td><span class="badge {severity_class}">{ff['severity']}</span></td>
+                        </tr>\n"""
+                    html_content += "</table>\n"
+        
+        # Beacon Detection
+        if self.stats.get('beacon_analysis'):
+            beacons = self.stats['beacon_analysis']
+            if beacons:
+                html_content += f"""
+        <h2>📡 C2 Beaconing Detection</h2>
+        <div class="alert alert-danger">
+            <strong>🚨 {len(beacons)} potential C2 beacons detected!</strong> Regular communication patterns suggest possible command-and-control activity.
+        </div>
+        <table>
+            <tr><th>Source IP</th><th>Destination</th><th>Port</th><th>Connections</th><th>Avg Interval</th><th>CV</th><th>Severity</th></tr>
+"""
+                for beacon in beacons[:20]:
+                    severity_class = f"badge-{beacon['severity'].lower()}"
+                    html_content += f"""<tr>
+                        <td>{beacon['src_ip']}</td>
+                        <td>{beacon['dst_ip']}</td>
+                        <td>{beacon['dst_port']}</td>
+                        <td>{beacon['connection_count']}</td>
+                        <td>{beacon['avg_interval_sec']:.1f}s</td>
+                        <td>{beacon['coefficient_variation']:.3f}</td>
+                        <td><span class="badge {severity_class}">{beacon['severity']}</span></td>
+                    </tr>\n"""
+                html_content += "</table>\n"
+        
         # Top Source IPs
         html_content += """
         <h2>🌐 Top Source IP Addresses</h2>
@@ -959,38 +1490,45 @@ class ReportGenerator:
         
         html_content += "</table>\n"
         
-        # Security Findings
+        # Security Findings Summary
         suspicious = self.stats.get('suspicious_activities', {})
+        dns = self.stats.get('dns_analysis', {})
+        beacons = self.stats.get('beacon_analysis', [])
+        
         findings_count = sum(len(v) for v in suspicious.values() if isinstance(v, list))
+        findings_count += len(dns.get('suspicious_queries', []))
+        findings_count += len(dns.get('dns_tunneling_suspects', []))
+        findings_count += len(dns.get('fast_flux_suspects', []))
+        findings_count += len(beacons)
         
         if findings_count > 0:
             html_content += f"""
-        <h2>🔒 Security Findings</h2>
+        <h2>🔒 Security Findings Summary</h2>
         <div class="alert alert-danger">
-            <strong>⚠️ {findings_count} potential security issues detected</strong>
+            <strong>⚠️ {findings_count} total security findings detected</strong>
         </div>
+        <table>
+            <tr><th>Category</th><th>Count</th></tr>
 """
             
-            for category, findings in suspicious.items():
-                if findings and isinstance(findings, list):
-                    html_content += f"<h3>{category.replace('_', ' ').title()}</h3>\n"
-                    html_content += "<table>\n<tr><th>Details</th><th>Severity</th></tr>\n"
-                    
-                    for finding in findings[:10]:
-                        if isinstance(finding, dict):
-                            details = " | ".join([f"<strong>{k}:</strong> {v}" for k, v in list(finding.items())[:4]])
-                            severity = finding.get('severity', 'MEDIUM')
-                            badge_class = f"badge-{severity.lower()}" if severity in ['HIGH', 'MEDIUM', 'LOW'] else 'badge-medium'
-                            html_content += f"""<tr>
-                                <td>{details}</td>
-                                <td><span class="badge {badge_class}">{severity}</span></td>
-                            </tr>\n"""
-                    
-                    html_content += "</table>\n"
+            if dns.get('suspicious_queries'):
+                html_content += f"<tr><td>Suspicious DNS Queries</td><td>{len(dns['suspicious_queries'])}</td></tr>\n"
+            if dns.get('dns_tunneling_suspects'):
+                html_content += f"<tr><td>DNS Tunneling Suspects</td><td>{len(dns['dns_tunneling_suspects'])}</td></tr>\n"
+            if dns.get('fast_flux_suspects'):
+                html_content += f"<tr><td>Fast-Flux DNS</td><td>{len(dns['fast_flux_suspects'])}</td></tr>\n"
+            if beacons:
+                html_content += f"<tr><td>C2 Beacons</td><td>{len(beacons)}</td></tr>\n"
+            if suspicious.get('port_scan'):
+                html_content += f"<tr><td>Port Scans</td><td>{len(suspicious['port_scan'])}</td></tr>\n"
+            if suspicious.get('syn_flood'):
+                html_content += f"<tr><td>SYN Floods</td><td>{len(suspicious['syn_flood'])}</td></tr>\n"
+            
+            html_content += "</table>\n"
         else:
             html_content += """
         <h2>🔒 Security Findings</h2>
-        <div class="alert alert-info">
+        <div class="alert alert-success">
             <strong>✅ No suspicious activities detected</strong>
         </div>
 """
@@ -998,7 +1536,8 @@ class ReportGenerator:
         # Footer
         html_content += f"""
         <footer>
-            <p>Generated by Enhanced PCAP Analyzer | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>Generated by Enhanced PCAP Analyzer v2.0 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p>⚠️ This report is for informational purposes only. Manual verification of findings is recommended.</p>
         </footer>
     </div>
 </body>
@@ -1051,12 +1590,15 @@ class ReportGenerator:
             axes[1, 0].set_title('Top 10 TCP Ports', fontweight='bold')
             axes[1, 0].grid(axis='y', alpha=0.3)
         
-        # Packet size distribution
-        if self.stats['packet_sizes']:
-            axes[1, 1].hist(self.stats['packet_sizes'], bins=50, color='mediumseagreen', edgecolor='black', alpha=0.7)
-            axes[1, 1].set_xlabel('Packet Size (bytes)')
-            axes[1, 1].set_ylabel('Frequency')
-            axes[1, 1].set_title('Packet Size Distribution', fontweight='bold')
+        # DNS TLD distribution
+        dns = self.stats.get('dns_analysis', {})
+        if dns.get('tld_distribution'):
+            top_tlds = dict(list(dns['tld_distribution'].items())[:10])
+            axes[1, 1].bar(range(len(top_tlds)), list(top_tlds.values()), color='mediumseagreen')
+            axes[1, 1].set_xticks(range(len(top_tlds)))
+            axes[1, 1].set_xticklabels([f".{tld}" for tld in top_tlds.keys()], rotation=45)
+            axes[1, 1].set_ylabel('Query Count')
+            axes[1, 1].set_title('Top 10 TLDs', fontweight='bold')
             axes[1, 1].grid(axis='y', alpha=0.3)
         
         plt.tight_layout()
@@ -1082,25 +1624,22 @@ class ReportGenerator:
     def _make_serializable(obj):
         """Convert Counter and defaultdict to regular dict for JSON serialization"""
         if isinstance(obj, (Counter, defaultdict)):
-            # Recursively convert the dict after converting Counter/defaultdict
             return ReportGenerator._make_serializable(dict(obj))
         elif isinstance(obj, dict):
-            # Handle tuple keys by converting them to strings
             new_dict = {}
             for k, v in obj.items():
                 if isinstance(k, tuple):
-                    # Convert tuple to string representation
                     new_key = " <-> ".join(str(x) for x in k)
                     new_dict[new_key] = ReportGenerator._make_serializable(v)
                 else:
-                    new_dict[str(k)] = ReportGenerator._make_serializable(v)  # Ensure key is string
+                    new_dict[str(k)] = ReportGenerator._make_serializable(v)
             return new_dict
         elif isinstance(obj, list):
             return [ReportGenerator._make_serializable(item) for item in obj]
         elif isinstance(obj, tuple):
-            return [ReportGenerator._make_serializable(item) for item in obj]  # Convert to list
+            return [ReportGenerator._make_serializable(item) for item in obj]
         elif isinstance(obj, (datetime,)):
-            return obj.isoformat()  # Convert datetime to string
+            return obj.isoformat()
         else:
             return obj
 
@@ -1108,7 +1647,7 @@ class ReportGenerator:
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description='Enhanced Advanced PCAP file analyzer with security detection',
+        description='Enhanced Advanced PCAP file analyzer v2.0 with advanced DNS analysis',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
@@ -1118,11 +1657,11 @@ Examples:
   # Verbose output with security scan
   python %(prog)s capture.pcap -v --security-scan
   
-  # Export to JSON and generate plots
-  python %(prog)s capture.pcap --export json --generate-plots
+  # Export to JSON
+  python %(prog)s capture.pcap --export json
   
   # Complete analysis with all outputs
-  python %(prog)s capture.pcap --export all --security-scan --generate-plots -v
+  python %(prog)s capture.pcap --export all --security-scan -v
   
   # Quick mode (faster, less detailed)
   python %(prog)s capture.pcap --quick
@@ -1161,31 +1700,29 @@ Examples:
     
     args = parser.parse_args()
     
-    # Validate file exists
     if not os.path.exists(args.pcap_file):
         print(f"❌ Error: File '{args.pcap_file}' not found")
         sys.exit(1)
     
-    # Display file info
     file_size = os.path.getsize(args.pcap_file) / (1024 * 1024)
     if args.verbose:
         print(f"\n{'=' * 80}")
-        print(f"🔍 Starting PCAP Analysis")
+        print(f"🔍 Starting PCAP Analysis v2.0")
         print(f"{'=' * 80}")
         print(f"📁 File: {args.pcap_file}")
         print(f"📊 Size: {file_size:.2f} MB")
         if args.quick:
             print(f"⚡ Mode: Quick (basic statistics only)")
+        if not TLDEXTRACT_AVAILABLE:
+            print(f"⚠️  Warning: tldextract not installed. TLD analysis will be basic.")
+            print(f"   Install with: pip install tldextract")
         print(f"{'=' * 80}\n")
     
-    # Initialize analyzer
     analyzer = PCAPAnalyzer(args.pcap_file, verbose=args.verbose, quick_mode=args.quick)
     
-    # Load packets
     if not analyzer.load_packets():
         sys.exit(1)
     
-    # Analyze
     if args.verbose:
         print("\n🔬 Analyzing packets...")
     stats = analyzer.analyze()
@@ -1194,23 +1731,20 @@ Examples:
         print("❌ Error: Analysis failed")
         sys.exit(1)
     
-    # Generate reports
     reporter = ReportGenerator(stats, args.pcap_file)
     
-    # Print statistics
     reporter.print_statistics()
     
-    # Security findings
     if args.security_scan:
         reporter.print_security_findings()
     
-    # Export functionality
     if args.export:
         print(f"\n📤 Exporting results...")
         if args.export == 'all':
             reporter.export_json()
             reporter.export_csv()
             reporter.export_html()
+
         elif args.export == 'json':
             reporter.export_json()
         elif args.export == 'csv':
@@ -1218,7 +1752,6 @@ Examples:
         elif args.export == 'html':
             reporter.export_html()
     
-    # Generate plots
     if args.generate_plots:
         print(f"\n📊 Generating visualizations...")
         reporter.generate_plots()

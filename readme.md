@@ -1,7 +1,7 @@
 ```markdown
-# Enhanced Advanced PCAP File Analyzer
+# Enhanced Advanced PCAP File Analyzer v2.0
 
-A comprehensive network packet capture analysis tool with advanced security detection, visualization, and reporting capabilities.
+A comprehensive network packet capture analysis tool with advanced security detection, DNS analysis, visualization, and reporting capabilities.
 
 ## Features
 
@@ -13,10 +13,22 @@ A comprehensive network packet capture analysis tool with advanced security dete
 - **Timeline Analysis**: Traffic bursts and timing patterns
 - **Packet Size Statistics**: Size distribution and data volume analysis
 
+### 🌐 Advanced DNS Analysis (NEW in v2.0)
+- **TLD Analysis**: Top-level domain distribution and suspicious TLD detection
+- **DNS Tunneling Detection**: Entropy analysis, query patterns, TXT record monitoring
+- **Fast-Flux Detection**: Multiple IP resolutions and low TTL patterns
+- **DGA Detection**: Domain Generation Algorithm pattern recognition
+- **Suspicious Query Detection**: Long domains, high entropy, numeric sequences
+- **Beaconing Detection**: Regular interval C2 communication patterns
+- **Query Type Analysis**: A, AAAA, TXT, CNAME, MX record distribution
+- **Response Code Analysis**: NXDOMAIN, SERVFAIL, REFUSED monitoring
+
 ### 🛡️ Security Detection
 - **Port Scanning**: Detection of reconnaissance activities
 - **SYN Floods**: Denial-of-service attack detection
-- **DNS Tunneling**: Suspicious large DNS packets
+- **DNS Tunneling**: Advanced pattern detection with entropy analysis
+- **C2 Beaconing**: Statistical analysis of regular communication intervals
+- **Fast-Flux DNS**: Botnet infrastructure detection
 - **Unusual Ports**: Malware-associated port usage
 - **Data Exfiltration**: Large outbound transfers
 - **ARP Spoofing**: MAC/IP address conflicts
@@ -24,10 +36,10 @@ A comprehensive network packet capture analysis tool with advanced security dete
 - **Credential Exposure**: Plaintext passwords and API keys
 
 ### 📊 Reporting & Export
-- **Console Reports**: Color-coded terminal output
+- **Console Reports**: Color-coded terminal output with emojis
 - **JSON Export**: Machine-readable analysis data
 - **CSV Export**: IP statistics for spreadsheets
-- **HTML Reports**: Professional web-based reports
+- **HTML Reports**: Professional web-based reports with security findings
 - **Visualizations**: Charts and graphs (requires matplotlib)
 
 ## Installation
@@ -41,16 +53,16 @@ A comprehensive network packet capture analysis tool with advanced security dete
 pip install scapy requests
 ```
 
-### Optional Dependencies
+### Recommended Dependencies (Enhanced Features)
 ```bash
-# For visualizations
-pip install matplotlib numpy
+# For advanced DNS analysis and visualizations
+pip install matplotlib tldextract
 
-# For IP geolocation
+# For IP geolocation (optional)
 pip install ipwhois
 
-# Install all dependencies
-pip install scapy requests matplotlib numpy ipwhois
+# Install all recommended dependencies
+pip install scapy requests matplotlib tldextract ipwhois
 ```
 
 ## Usage
@@ -80,7 +92,7 @@ python pcap_analyzer.py capture.pcap --export csv
 # Generate HTML report
 python pcap_analyzer.py capture.pcap --export html
 
-# Export all formats
+# Export all formats (JSON, CSV, HTML)
 python pcap_analyzer.py capture.pcap --export all
 ```
 
@@ -114,7 +126,7 @@ The analyzer generates the following output files:
 
 - `capture_analysis.json` - Complete analysis data in JSON format
 - `capture_ip_stats.csv` - IP statistics in CSV format
-- `capture_report.html` - Professional HTML report
+- `capture_report.html` - Professional HTML report with security findings
 - `capture_plots.png` - Visualization charts (with `--generate-plots`)
 
 ## Use Cases
@@ -139,14 +151,32 @@ python pcap_analyzer.py performance_capture.pcap --quick --generate-plots
 python pcap_analyzer.py suspicious_traffic.pcap --security-scan --export html
 ```
 
+### 🦠 Malware Analysis
+```bash
+python pcap_analyzer.py malware.pcap --security-scan --export html --generate-plots
+# Detects: C2 beacons, DNS tunneling, fast-flux, DGA domains
+```
+
+### 🔒 DNS Security Audit
+```bash
+python pcap_analyzer.py dns_traffic.pcap -v
+# Analyzes: Suspicious queries, tunneling attempts, fast-flux patterns
+```
+
 ## Security Detection Capabilities
 
 ### Network Attacks
 - **Port Scanning**: >50 unique destination ports from single source
 - **SYN Flood**: >1000 SYN packets from single source
 - **ICMP Flood**: >500 ICMP packets from single source
-- **DNS Tunneling**: DNS packets >512 bytes
 - **Data Exfiltration**: Large packets (>1400 bytes) to external IPs
+
+### Advanced DNS Threats
+- **DNS Tunneling**: High entropy domains, TXT query patterns, regular intervals, long query names
+- **Fast-Flux**: Multiple IP resolutions (>10 IPs) with low TTL values
+- **DGA Detection**: High Shannon entropy (>4.5), unusual character patterns
+- **Suspicious Queries**: Long domains (>50 chars), hex patterns, base64 encoding, numeric sequences
+- **C2 Beaconing**: Low variance intervals with regular communication patterns
 
 ### Application Layer Threats
 - **HTTP Attacks**: XSS, SQL injection, command injection patterns
@@ -162,6 +192,13 @@ python pcap_analyzer.py suspicious_traffic.pcap --security-scan --export html
 - Packet counts and percentages for all major protocols
 - TCP flag distribution analysis
 - Service identification for common ports
+
+### DNS Analysis (Enhanced)
+- Query type distribution (A, AAAA, TXT, CNAME, MX, etc.)
+- Response code analysis (NOERROR, NXDOMAIN, SERVFAIL)
+- TLD distribution and suspicious TLD detection
+- Query length statistics and entropy calculations
+- Domain-to-IP and IP-to-domain resolution mapping
 
 ### IP Analysis
 - Top talkers (source and destination)
@@ -181,6 +218,7 @@ python pcap_analyzer.py suspicious_traffic.pcap --security-scan --export html
 - **Memory Efficient**: Processes packets in streams to handle large captures
 - **API Rate Limiting**: Limits external IP lookups to avoid service abuse
 - **Progress Indicators**: Verbose mode shows processing status for large files
+- **DNS Optimization**: Advanced DNS analysis without significant performance impact
 
 ## Troubleshooting
 
@@ -196,13 +234,33 @@ python pcap_analyzer.py huge_capture.pcap --quick
 pip install scapy  # Fix missing scapy error
 
 # Visualization errors
-pip install matplotlib numpy  # Install plotting dependencies
+pip install matplotlib  # Install plotting dependencies
+
+# DNS analysis limitations
+pip install tldextract  # For advanced TLD analysis
 ```
 
 ### File Size Recommendations
-- **Small files** (<100MB): Use all features
+- **Small files** (<100MB): Use all features including deep packet inspection
 - **Medium files** (100MB-1GB): Consider quick mode for faster results
 - **Large files** (>1GB): Use quick mode and limit exports
+
+## Technical Details
+
+### DNS Tunneling Detection
+- **Entropy Analysis**: Shannon entropy calculation for domain names
+- **Pattern Recognition**: Long domains, TXT queries, regular intervals
+- **Statistical Analysis**: Query volume, average length, variance patterns
+
+### Beacon Detection
+- **Coefficient of Variation**: Measures regularity in communication intervals
+- **Time Series Analysis**: Identifies periodic C2 communications
+- **Threshold-based**: Configurable sensitivity for different environments
+
+### Fast-Flux Detection
+- **IP Diversity**: Multiple IP addresses for single domains
+- **TTL Analysis**: Short-lived DNS records characteristic of fast-flux networks
+- **Resolution Patterns**: High frequency of DNS resolutions
 
 ## License
 
@@ -215,4 +273,6 @@ Feel free to submit issues and enhancement requests to improve the analyzer's ca
 ---
 
 **Note**: Always ensure you have proper authorization before analyzing network traffic captures.
+
+**Version**: 2.0 | **Features**: Advanced DNS Analysis, Security Detection, Visualization
 ```
