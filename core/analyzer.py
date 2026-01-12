@@ -1,25 +1,15 @@
-"""
-Enhanced Advanced PCAP File Analyzer v2.0
-Analyzes network packet capture files with comprehensive statistics, 
-advanced DNS analysis, security detection, and export capabilities
-
-Installation:
-    pip install scapy requests matplotlib ipwhois tldextract
-"""
-
-import argparse
-import re
 import json
-import csv
+import math
+import re
 import sys
 import os
-import math
+import warnings
 from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Dict, List, Tuple, Any, Optional
 import requests
 from scapy.all import rdpcap, IP, TCP, UDP, ICMP, ARP, DNS, DNSQR, DNSRR, Raw
-from scapy.layers.http import HTTP, HTTPRequest, HTTPResponse
+from scapy.layers.http import HTTPRequest, HTTPResponse
 from scapy.layers.dhcp import DHCP
 from scapy.layers.ntp import NTP
 from scapy.error import Scapy_Exception
@@ -28,13 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 warnings.filterwarnings('ignore')
 
-# Try to import optional dependencies
-try:
-    from ipwhois import IPWhois
-    IPWHOIS_AVAILABLE = True
-except ImportError:
-    IPWHOIS_AVAILABLE = False
-
+# Import optional dependencies
 try:
     import matplotlib.pyplot as plt
     import matplotlib
@@ -49,9 +33,15 @@ try:
 except ImportError:
     TLDEXTRACT_AVAILABLE = False
 
+try:
+    from ipwhois import IPWhois
+    IPWHOIS_AVAILABLE = True
+except ImportError:
+    IPWHOIS_AVAILABLE = False
+
 
 class AdvancedDNSAnalyzer:
-    """Advanced DNS traffic analyzer"""
+    """Advanced DNS traffic analyzer with all original features"""
     
     # Known malicious/suspicious TLDs
     SUSPICIOUS_TLDS = {
@@ -82,15 +72,18 @@ class AdvancedDNSAnalyzer:
         if not packet.haslayer(DNS):
             return
         
-        dns_layer = packet[DNS]
-        
-        # Query analysis
-        if dns_layer.qr == 0 and packet.haslayer(DNSQR):
-            self._analyze_query(packet, dns_layer)
-        
-        # Response analysis
-        elif dns_layer.qr == 1:
-            self._analyze_response(packet, dns_layer)
+        try:
+            dns_layer = packet[DNS]
+            
+            # Query analysis
+            if dns_layer.qr == 0 and packet.haslayer(DNSQR):
+                self._analyze_query(packet, dns_layer)
+            
+            # Response analysis
+            elif dns_layer.qr == 1:
+                self._analyze_response(packet, dns_layer)
+        except Exception:
+            pass
     
     def _analyze_query(self, packet, dns_layer):
         """Analyze DNS query"""
@@ -474,9 +467,9 @@ class BeaconDetector:
 
 
 class PCAPAnalyzer:
-    """Main analyzer class for PCAP files"""
+    """Main PCAP analyzer with GUI support and all original features"""
     
-    def __init__(self, filename: str, verbose: bool = False, quick_mode: bool = False):
+    def __init__(self, filename: str = None, verbose: bool = False, quick_mode: bool = False):
         self.filename = filename
         self.verbose = verbose
         self.quick_mode = quick_mode
@@ -484,35 +477,50 @@ class PCAPAnalyzer:
         self.stats = None
         self.dns_analyzer = AdvancedDNSAnalyzer()
         self.beacon_detector = BeaconDetector()
+        self.progress_callback = None
         
-    def load_packets(self) -> bool:
+    def set_progress_callback(self, callback):
+        """Set callback for progress updates"""
+        self.progress_callback = callback
+    
+    def load_packets(self, filename: str = None) -> bool:
         """Load packets from PCAP file with error handling"""
+        if filename:
+            self.filename = filename
+            
         try:
-            if self.verbose:
-                print(f"📂 Loading packets from {self.filename}...")
+            if self.verbose and self.progress_callback:
+                self.progress_callback("Loading packets...", 0)
             
             self.packets = rdpcap(self.filename)
             
-            if self.verbose:
-                print(f"✅ Loaded {len(self.packets)} packets successfully")
+            if self.verbose and self.progress_callback:
+                self.progress_callback(f"Loaded {len(self.packets)} packets", 100)
             
             return True
         except FileNotFoundError:
-            print(f"❌ Error: File '{self.filename}' not found")
+            if self.progress_callback:
+                self.progress_callback(f"Error: File '{self.filename}' not found", 0, is_error=True)
             return False
         except Scapy_Exception as e:
-            print(f"❌ Scapy error reading file: {e}")
+            if self.progress_callback:
+                self.progress_callback(f"Scapy error reading file: {e}", 0, is_error=True)
             return False
         except Exception as e:
-            print(f"❌ Unexpected error reading file: {e}")
+            if self.progress_callback:
+                self.progress_callback(f"Unexpected error reading file: {e}", 0, is_error=True)
             return False
     
-    def analyze(self) -> Dict[str, Any]:
+    def analyze(self, filename: str = None) -> Dict[str, Any]:
         """Perform comprehensive analysis of loaded packets"""
-        if not self.packets:
+        if filename:
+            self.filename = filename
+            
+        if not self.load_packets():
             return {}
         
         self.stats = {
+            'filename': os.path.basename(self.filename),
             'total_packets': len(self.packets),
             'protocols': Counter(),
             'ip_sources': Counter(),
@@ -530,10 +538,14 @@ class PCAPAnalyzer:
             'beacon_analysis': []
         }
         
+        total_packets = len(self.packets)
+        
         # Analyze packets
         for idx, packet in enumerate(self.packets):
-            if self.verbose and idx % 10000 == 0 and idx > 0:
-                print(f"  Processing packet {idx}/{len(self.packets)}...")
+            # Update progress
+            if self.progress_callback and idx % 1000 == 0:
+                progress = int((idx / total_packets) * 100)
+                self.progress_callback(f"Analyzing packets... {idx}/{total_packets}", progress)
             
             self._analyze_packet(packet)
             
@@ -546,41 +558,93 @@ class PCAPAnalyzer:
                 self.beacon_detector.add_packet(packet)
         
         # Get DNS statistics
-        if self.verbose:
-            print("🔍 Analyzing DNS traffic...")
+        if self.progress_callback:
+            self.progress_callback("Analyzing DNS traffic...", 85)
         self.stats['dns_analysis'] = self.dns_analyzer.get_statistics()
         
         # Enhanced analysis
-        if self.verbose:
-            print("📊 Performing timeline analysis...")
+        if self.progress_callback:
+            self.progress_callback("Performing timeline analysis...", 88)
         self.stats['timeline'] = self._analyze_timeline()
         
         if not self.quick_mode:
-            if self.verbose:
-                print("🔍 Detecting suspicious patterns...")
+            if self.progress_callback:
+                self.progress_callback("Detecting suspicious patterns...", 90)
             self.stats['suspicious_activities'] = self._detect_suspicious_patterns()
             
-            if self.verbose:
-                print("🌐 Analyzing HTTP traffic...")
+            if self.progress_callback:
+                self.progress_callback("Analyzing HTTP traffic...", 92)
             self.stats['http_analysis'] = self._analyze_http_traffic()
             
-            if self.verbose:
-                print("🔐 Analyzing payloads...")
+            if self.progress_callback:
+                self.progress_callback("Analyzing payloads...", 94)
             self.stats['payload_analysis'] = self._analyze_payloads()
             
-            if self.verbose:
-                print("📡 Detecting beacons...")
+            if self.progress_callback:
+                self.progress_callback("Detecting beacons...", 96)
             self.stats['beacon_analysis'] = self.beacon_detector.detect_beacons()
             
-            if self.verbose:
-                print("🌍 Enriching IP information...")
+            if self.progress_callback:
+                self.progress_callback("Enriching IP information...", 98)
             top_ips = set(
                 list(dict(self.stats['ip_sources'].most_common(10)).keys()) + 
                 list(dict(self.stats['ip_destinations'].most_common(10)).keys())
             )
-            self.stats['ip_enrichment'] = self._enrich_ip_information(top_ips)
+            enriched = {}
+            total_ips = len(top_ips)
+            for idx, ip in enumerate(top_ips, 1):
+                if self.progress_callback and idx % 3 == 0:
+                    progress = 98 + int((idx / total_ips) * 2)
+                    self.progress_callback(f"Enriching IP information... {idx}/{total_ips}...", min(progress, 99))
+                ip_info = self._enrich_single_ip(ip)
+                enriched[ip] = ip_info
+
+
+            self.stats['ip_enrichment'] = enriched
+        
+        if self.progress_callback:
+            self.progress_callback("Analysis complete!", 100)
         
         return self.stats
+
+    def _enrich_single_ip(self, ip: str) -> Dict[str, str]:
+        """Enrich a single IP address with timeout protection"""
+        if not self._is_external_ip(ip):
+            return {
+                'country': 'Private',
+                'city': 'Private',
+                'isp': 'Private Network',
+                'asn': 'N/A',
+                'org': 'Private'
+            }
+        
+        try:
+            response = requests.get(
+                f'http://ip-api.com/json/{ip}',
+                timeout=2,
+                headers={'User-Agent': 'PCAP-Analyzer/3.0'}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success':
+                    return {
+                        'country': data.get('country', 'Unknown'),
+                        'city': data.get('city', 'Unknown'),
+                        'isp': data.get('isp', 'Unknown'),
+                        'asn': data.get('as', 'Unknown'),
+                        'org': data.get('org', 'Unknown')
+                    }
+        except:
+            pass
+        
+        return {
+            'country': 'Unknown',
+            'city': 'Unknown',
+            'isp': 'Unknown',
+            'asn': 'Unknown',
+            'org': 'Unknown'
+        }
     
     def _analyze_packet(self, packet) -> None:
         """Analyze individual packet"""
@@ -926,26 +990,42 @@ class PCAPAnalyzer:
                 continue
             
             try:
-                response = requests.get(
-                    f'http://ip-api.com/json/{ip}',
-                    timeout=3,
-                    headers={'User-Agent': 'PCAP-Analyzer/2.0'}
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get('status') == 'success':
-                        enriched_ips[ip] = {
-                            'country': data.get('country', 'Unknown'),
-                            'city': data.get('city', 'Unknown'),
-                            'isp': data.get('isp', 'Unknown'),
-                            'asn': data.get('as', 'Unknown'),
-                            'org': data.get('org', 'Unknown'),
-                            'lat': data.get('lat'),
-                            'lon': data.get('lon')
-                        }
-                        continue
-            except Exception:
+                if IPWHOIS_AVAILABLE:
+                    # Try ipwhois first
+                    obj = IPWhois(ip, timeout=3)
+                    results = obj.lookup_rdap(depth=1)
+                    enriched_ips[ip] = {
+                        'country': results.get('asn_country_code', 'Unknown'),
+                        'city': results.get('city', 'Unknown'),
+                        'isp': results.get('asn_description', 'Unknown'),
+                        'asn': results.get('asn', 'Unknown'),
+                        'org': results.get('network', {}).get('name', 'Unknown')
+                    }
+                else:
+                    # Fallback to ip-api.com
+                    response = requests.get(
+                        f'http://ip-api.com/json/{ip}',
+                        timeout=2,
+                        headers={'User-Agent': 'PCAP-Analyzer/3.0'}
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('status') == 'success':
+                            enriched_ips[ip] = {
+                                'country': data.get('country', 'Unknown'),
+                                'city': data.get('city', 'Unknown'),
+                                'isp': data.get('isp', 'Unknown'),
+                                'asn': data.get('as', 'Unknown'),
+                                'org': data.get('org', 'Unknown'),
+                                'lat': data.get('lat'),
+                                'lon': data.get('lon')
+                            }
+                            continue
+            except requests.Timeout:
+                if self.progress_callback:
+                    self.progress_callback(f"Timeout enriching {ip}, skipping...", 98)
+            except Exception as e:
                 pass
             
             enriched_ips[ip] = {
@@ -978,20 +1058,15 @@ class PCAPAnalyzer:
             return True
         except Exception:
             return False
-
-
-class ReportGenerator:
-    """Generate various report formats"""
-    
-    def __init__(self, stats: Dict[str, Any], filename: str):
-        self.stats = stats
-        self.filename = filename
-        self.base_name = os.path.splitext(filename)[0]
     
     def print_statistics(self) -> None:
-        """Print formatted statistics to console"""
+        """Print formatted statistics to console (for CLI mode)"""
+        if not self.stats:
+            print("No analysis results available. Run analyze() first.")
+            return
+        
         print("\n" + "=" * 80)
-        print("ADVANCED PCAP ANALYSIS REPORT v2.0")
+        print("ADVANCED PCAP ANALYSIS REPORT v3.0")
         print("=" * 80)
         
         # Summary
@@ -1133,6 +1208,9 @@ class ReportGenerator:
     
     def print_security_findings(self) -> None:
         """Print security-related findings"""
+        if not self.stats:
+            return
+        
         suspicious = self.stats.get('suspicious_activities', {})
         dns = self.stats.get('dns_analysis', {})
         beacons = self.stats.get('beacon_analysis', [])
@@ -1214,400 +1292,6 @@ class ReportGenerator:
         
         print("!" * 80)
     
-    def export_json(self) -> str:
-        """Export statistics to JSON format"""
-        output_file = f"{self.base_name}_analysis.json"
-        
-        serializable_stats = self._make_serializable(self.stats)
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(serializable_stats, f, indent=2, default=str)
-        
-        print(f"📁 Exported JSON to: {output_file}")
-        return output_file
-    
-    def export_csv(self) -> str:
-        """Export IP statistics to CSV format"""
-        output_file = f"{self.base_name}_ip_stats.csv"
-        
-        with open(output_file, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(['IP Address', 'Packet Count', 'Type', 'Country', 'City', 'ISP', 'ASN'])
-            
-            for ip, count in self.stats['ip_sources'].most_common(100):
-                enrichment = self.stats.get('ip_enrichment', {}).get(ip, {})
-                writer.writerow([
-                    ip, count, 'Source',
-                    enrichment.get('country', 'Unknown'),
-                    enrichment.get('city', 'Unknown'),
-                    enrichment.get('isp', 'Unknown'),
-                    enrichment.get('asn', 'Unknown')
-                ])
-            
-            for ip, count in self.stats['ip_destinations'].most_common(100):
-                enrichment = self.stats.get('ip_enrichment', {}).get(ip, {})
-                writer.writerow([
-                    ip, count, 'Destination',
-                    enrichment.get('country', 'Unknown'),
-                    enrichment.get('city', 'Unknown'),
-                    enrichment.get('isp', 'Unknown'),
-                    enrichment.get('asn', 'Unknown')
-                ])
-        
-        print(f"📁 Exported CSV to: {output_file}")
-        return output_file
-    
-    def export_html(self) -> str:
-        """Generate comprehensive HTML report"""
-        output_file = f"{self.base_name}_report.html"
-        
-        html_content = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PCAP Analysis Report v2.0 - {os.path.basename(self.filename)}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: #f5f5f5;
-            padding: 20px;
-        }}
-        .container {{ max-width: 1400px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-bottom: 30px; }}
-        h2 {{ color: #34495e; margin-top: 30px; margin-bottom: 15px; padding: 10px; background: #ecf0f1; border-left: 4px solid #3498db; }}
-        h3 {{ color: #555; margin-top: 20px; margin-bottom: 10px; }}
-        .summary {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 30px; }}
-        .summary p {{ margin: 8px 0; font-size: 1.1em; }}
-        .summary strong {{ color: #fff; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 15px 0; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }}
-        th {{ background: #3498db; color: white; padding: 12px; text-align: left; font-weight: 600; }}
-        td {{ padding: 10px; border-bottom: 1px solid #ddd; }}
-        tr:hover {{ background: #f8f9fa; }}
-        .warning {{ color: #e67e22; font-weight: bold; }}
-        .critical {{ color: #e74c3c; font-weight: bold; }}
-        .safe {{ color: #27ae60; font-weight: bold; }}
-        .badge {{ display: inline-block; padding: 4px 8px; border-radius: 3px; font-size: 0.85em; font-weight: bold; }}
-        .badge-high {{ background: #e74c3c; color: white; }}
-        .badge-medium {{ background: #f39c12; color: white; }}
-        .badge-low {{ background: #27ae60; color: white; }}
-        .metric {{ display: inline-block; margin: 10px 20px 10px 0; }}
-        .metric-label {{ font-weight: bold; color: #555; }}
-        .metric-value {{ color: #3498db; font-size: 1.2em; }}
-        .alert {{ padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid; }}
-        .alert-danger {{ background: #fee; border-color: #e74c3c; }}
-        .alert-warning {{ background: #fef3cd; border-color: #f39c12; }}
-        .alert-info {{ background: #d1ecf1; border-color: #3498db; }}
-        .alert-success {{ background: #d4edda; border-color: #27ae60; }}
-        footer {{ margin-top: 40px; padding-top: 20px; border-top: 2px solid #ecf0f1; text-align: center; color: #7f8c8d; }}
-        .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }}
-        .card {{ background: #f8f9fa; padding: 15px; border-radius: 5px; border-left: 4px solid #3498db; }}
-        .card h4 {{ color: #2c3e50; margin-bottom: 10px; }}
-        .code {{ background: #2c3e50; color: #ecf0f1; padding: 10px; border-radius: 4px; font-family: monospace; margin: 10px 0; overflow-x: auto; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>📊 PCAP Analysis Report v2.0</h1>
-        
-        <div class="summary">
-            <h2 style="color: white; background: transparent; border: none; padding: 0; margin-bottom: 15px;">📋 Executive Summary</h2>
-            <p><strong>File:</strong> {os.path.basename(self.filename)}</p>
-            <p><strong>Total Packets:</strong> {self.stats['total_packets']:,}</p>
-            <p><strong>Capture Duration:</strong> {self.stats.get('timeline', {}).get('duration_seconds', 0):.2f} seconds</p>
-            <p><strong>Analysis Date:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p><strong>Packets/Second:</strong> {self.stats.get('timeline', {}).get('packets_per_second', 0):.2f}</p>
-        </div>
-"""
-        
-        # Protocol Distribution
-        html_content += """
-        <h2>📡 Protocol Distribution</h2>
-        <table>
-            <tr><th>Protocol</th><th>Packet Count</th><th>Percentage</th></tr>
-"""
-        for protocol, count in self.stats['protocols'].most_common():
-            percentage = (count / self.stats['total_packets']) * 100
-            html_content += f"<tr><td>{protocol}</td><td>{count:,}</td><td>{percentage:.2f}%</td></tr>\n"
-        
-        html_content += "</table>\n"
-        
-        # DNS Analysis Section
-        if self.stats.get('dns_analysis'):
-            dns = self.stats['dns_analysis']
-            html_content += """
-        <h2>🔍 DNS Analysis</h2>
-        <div class="grid">
-            <div class="card">
-                <h4>DNS Overview</h4>
-"""
-            html_content += f"<p><strong>Total Queries:</strong> {dns.get('total_queries', 0):,}</p>\n"
-            html_content += f"<p><strong>Total Responses:</strong> {dns.get('total_responses', 0):,}</p>\n"
-            html_content += f"<p><strong>Unique Domains:</strong> {dns.get('unique_domains', 0):,}</p>\n"
-            html_content += "</div>\n"
-            
-            # Query length stats
-            if dns.get('query_length_stats'):
-                ql = dns['query_length_stats']
-                html_content += """
-            <div class="card">
-                <h4>Query Length Statistics</h4>
-"""
-                html_content += f"<p><strong>Min:</strong> {ql.get('min', 0)} chars</p>\n"
-                html_content += f"<p><strong>Max:</strong> {ql.get('max', 0)} chars</p>\n"
-                html_content += f"<p><strong>Average:</strong> {ql.get('avg', 0):.1f} chars</p>\n"
-                html_content += "</div>\n"
-            
-            html_content += "</div>\n"
-            
-            # Top TLDs
-            if dns.get('tld_distribution'):
-                html_content += """
-        <h3>Top Level Domains (TLDs)</h3>
-        <table>
-            <tr><th>TLD</th><th>Query Count</th></tr>
-"""
-                for tld, count in list(dns['tld_distribution'].items())[:20]:
-                    html_content += f"<tr><td>.{tld}</td><td>{count:,}</td></tr>\n"
-                html_content += "</table>\n"
-            
-            # Top queried domains
-            if dns.get('top_queried_domains'):
-                html_content += """
-        <h3>Most Queried Domains</h3>
-        <table>
-            <tr><th>Domain</th><th>Query Count</th></tr>
-"""
-                for domain, count in dns['top_queried_domains'][:20]:
-                    html_content += f"<tr><td>{domain}</td><td>{count:,}</td></tr>\n"
-                html_content += "</table>\n"
-            
-            # DNS Tunneling Suspects
-            if dns.get('dns_tunneling_suspects'):
-                tunneling = dns['dns_tunneling_suspects']
-                if tunneling:
-                    html_content += f"""
-        <h3>🚨 DNS Tunneling Suspects ({len(tunneling)})</h3>
-        <div class="alert alert-danger">
-            <strong>⚠️ Potential DNS tunneling detected!</strong> These domains exhibit characteristics commonly associated with data exfiltration or C2 communication via DNS.
-        </div>
-        <table>
-            <tr><th>Domain</th><th>Queries</th><th>Avg Length</th><th>Severity</th><th>Indicators</th></tr>
-"""
-                    for tunnel in tunneling[:10]:
-                        severity_class = f"badge-{tunnel['severity'].lower()}"
-                        indicators = '<br>'.join(tunnel['indicators'][:3])
-                        html_content += f"""<tr>
-                            <td>{tunnel['domain']}</td>
-                            <td>{tunnel['query_count']}</td>
-                            <td>{tunnel['avg_length']:.1f}</td>
-                            <td><span class="badge {severity_class}">{tunnel['severity']}</span></td>
-                            <td>{indicators}</td>
-                        </tr>\n"""
-                    html_content += "</table>\n"
-            
-            # Suspicious DNS Queries
-            if dns.get('suspicious_queries'):
-                html_content += f"""
-        <h3>⚠️ Suspicious DNS Queries ({len(dns['suspicious_queries'])})</h3>
-        <table>
-            <tr><th>Domain</th><th>Entropy</th><th>Length</th><th>Reasons</th></tr>
-"""
-                for sq in dns['suspicious_queries'][:20]:
-                    reasons = '<br>'.join(sq.get('reasons', [])[:3])
-                    html_content += f"""<tr>
-                        <td>{sq['domain']}</td>
-                        <td>{sq.get('entropy', 0):.2f}</td>
-                        <td>{sq.get('length', 0)}</td>
-                        <td>{reasons}</td>
-                    </tr>\n"""
-                html_content += "</table>\n"
-            
-            # Fast-Flux Detection
-            if dns.get('fast_flux_suspects'):
-                fast_flux = dns['fast_flux_suspects']
-                if fast_flux:
-                    html_content += f"""
-        <h3>🚨 Fast-Flux DNS Detected ({len(fast_flux)})</h3>
-        <div class="alert alert-warning">
-            <strong>⚠️ Fast-flux DNS patterns detected!</strong> These domains resolve to an unusually high number of IP addresses, which is characteristic of botnets and malware infrastructure.
-        </div>
-        <table>
-            <tr><th>Domain</th><th>Unique IPs</th><th>Total Resolutions</th><th>Severity</th></tr>
-"""
-                    for ff in fast_flux[:10]:
-                        severity_class = f"badge-{ff['severity'].lower()}"
-                        html_content += f"""<tr>
-                            <td>{ff['domain']}</td>
-                            <td>{ff['unique_ips']}</td>
-                            <td>{ff['total_resolutions']}</td>
-                            <td><span class="badge {severity_class}">{ff['severity']}</span></td>
-                        </tr>\n"""
-                    html_content += "</table>\n"
-        
-        # Beacon Detection
-        if self.stats.get('beacon_analysis'):
-            beacons = self.stats['beacon_analysis']
-            if beacons:
-                html_content += f"""
-        <h2>📡 C2 Beaconing Detection</h2>
-        <div class="alert alert-danger">
-            <strong>🚨 {len(beacons)} potential C2 beacons detected!</strong> Regular communication patterns suggest possible command-and-control activity.
-        </div>
-        <table>
-            <tr><th>Source IP</th><th>Destination</th><th>Port</th><th>Connections</th><th>Avg Interval</th><th>CV</th><th>Severity</th></tr>
-"""
-                for beacon in beacons[:20]:
-                    severity_class = f"badge-{beacon['severity'].lower()}"
-                    html_content += f"""<tr>
-                        <td>{beacon['src_ip']}</td>
-                        <td>{beacon['dst_ip']}</td>
-                        <td>{beacon['dst_port']}</td>
-                        <td>{beacon['connection_count']}</td>
-                        <td>{beacon['avg_interval_sec']:.1f}s</td>
-                        <td>{beacon['coefficient_variation']:.3f}</td>
-                        <td><span class="badge {severity_class}">{beacon['severity']}</span></td>
-                    </tr>\n"""
-                html_content += "</table>\n"
-        
-        # Top Source IPs
-        html_content += """
-        <h2>🌐 Top Source IP Addresses</h2>
-        <table>
-            <tr><th>IP Address</th><th>Packets</th><th>Country</th><th>ISP</th></tr>
-"""
-        for ip, count in self.stats['ip_sources'].most_common(20):
-            enrichment = self.stats.get('ip_enrichment', {}).get(ip, {})
-            html_content += f"""<tr>
-                <td>{ip}</td>
-                <td>{count:,}</td>
-                <td>{enrichment.get('country', 'Unknown')}</td>
-                <td>{enrichment.get('isp', 'Unknown')}</td>
-            </tr>\n"""
-        
-        html_content += "</table>\n"
-        
-        # Security Findings Summary
-        suspicious = self.stats.get('suspicious_activities', {})
-        dns = self.stats.get('dns_analysis', {})
-        beacons = self.stats.get('beacon_analysis', [])
-        
-        findings_count = sum(len(v) for v in suspicious.values() if isinstance(v, list))
-        findings_count += len(dns.get('suspicious_queries', []))
-        findings_count += len(dns.get('dns_tunneling_suspects', []))
-        findings_count += len(dns.get('fast_flux_suspects', []))
-        findings_count += len(beacons)
-        
-        if findings_count > 0:
-            html_content += f"""
-        <h2>🔒 Security Findings Summary</h2>
-        <div class="alert alert-danger">
-            <strong>⚠️ {findings_count} total security findings detected</strong>
-        </div>
-        <table>
-            <tr><th>Category</th><th>Count</th></tr>
-"""
-            
-            if dns.get('suspicious_queries'):
-                html_content += f"<tr><td>Suspicious DNS Queries</td><td>{len(dns['suspicious_queries'])}</td></tr>\n"
-            if dns.get('dns_tunneling_suspects'):
-                html_content += f"<tr><td>DNS Tunneling Suspects</td><td>{len(dns['dns_tunneling_suspects'])}</td></tr>\n"
-            if dns.get('fast_flux_suspects'):
-                html_content += f"<tr><td>Fast-Flux DNS</td><td>{len(dns['fast_flux_suspects'])}</td></tr>\n"
-            if beacons:
-                html_content += f"<tr><td>C2 Beacons</td><td>{len(beacons)}</td></tr>\n"
-            if suspicious.get('port_scan'):
-                html_content += f"<tr><td>Port Scans</td><td>{len(suspicious['port_scan'])}</td></tr>\n"
-            if suspicious.get('syn_flood'):
-                html_content += f"<tr><td>SYN Floods</td><td>{len(suspicious['syn_flood'])}</td></tr>\n"
-            
-            html_content += "</table>\n"
-        else:
-            html_content += """
-        <h2>🔒 Security Findings</h2>
-        <div class="alert alert-success">
-            <strong>✅ No suspicious activities detected</strong>
-        </div>
-"""
-        
-        # Footer
-        html_content += f"""
-        <footer>
-            <p>Generated by Enhanced PCAP Analyzer v2.0 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            <p>⚠️ This report is for informational purposes only. Manual verification of findings is recommended.</p>
-        </footer>
-    </div>
-</body>
-</html>
-"""
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-        
-        print(f"📁 Exported HTML report to: {output_file}")
-        return output_file
-    
-    def generate_plots(self) -> Optional[str]:
-        """Generate visual plots for the analysis"""
-        if not MATPLOTLIB_AVAILABLE:
-            print("⚠️  matplotlib not available. Skipping plot generation.")
-            return None
-        
-        output_file = f"{self.base_name}_plots.png"
-        
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        fig.suptitle('PCAP Analysis Visualization', fontsize=16, fontweight='bold')
-        
-        # Protocol distribution pie chart
-        if self.stats['protocols']:
-            protocols = list(self.stats['protocols'].keys())
-            counts = list(self.stats['protocols'].values())
-            colors = plt.cm.Set3(range(len(protocols)))
-            
-            axes[0, 0].pie(counts, labels=protocols, autopct='%1.1f%%', colors=colors, startangle=90)
-            axes[0, 0].set_title('Protocol Distribution', fontweight='bold')
-        
-        # Top source IPs bar chart
-        if self.stats['ip_sources']:
-            top_sources = dict(self.stats['ip_sources'].most_common(10))
-            axes[0, 1].barh(range(len(top_sources)), list(top_sources.values()), color='steelblue')
-            axes[0, 1].set_yticks(range(len(top_sources)))
-            axes[0, 1].set_yticklabels(list(top_sources.keys()), fontsize=8)
-            axes[0, 1].set_xlabel('Packet Count')
-            axes[0, 1].set_title('Top 10 Source IPs', fontweight='bold')
-            axes[0, 1].grid(axis='x', alpha=0.3)
-        
-        # Top TCP ports
-        if self.stats['ports']['tcp']:
-            top_tcp = dict(self.stats['ports']['tcp'].most_common(10))
-            axes[1, 0].bar(range(len(top_tcp)), list(top_tcp.values()), color='coral')
-            axes[1, 0].set_xticks(range(len(top_tcp)))
-            axes[1, 0].set_xticklabels(list(top_tcp.keys()), rotation=45)
-            axes[1, 0].set_ylabel('Packet Count')
-            axes[1, 0].set_title('Top 10 TCP Ports', fontweight='bold')
-            axes[1, 0].grid(axis='y', alpha=0.3)
-        
-        # DNS TLD distribution
-        dns = self.stats.get('dns_analysis', {})
-        if dns.get('tld_distribution'):
-            top_tlds = dict(list(dns['tld_distribution'].items())[:10])
-            axes[1, 1].bar(range(len(top_tlds)), list(top_tlds.values()), color='mediumseagreen')
-            axes[1, 1].set_xticks(range(len(top_tlds)))
-            axes[1, 1].set_xticklabels([f".{tld}" for tld in top_tlds.keys()], rotation=45)
-            axes[1, 1].set_ylabel('Query Count')
-            axes[1, 1].set_title('Top 10 TLDs', fontweight='bold')
-            axes[1, 1].grid(axis='y', alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(output_file, dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"📊 Generated plots: {output_file}")
-        return output_file
-    
     @staticmethod
     def _get_service_name(port: int) -> str:
         """Get common service name for port number"""
@@ -1619,148 +1303,3 @@ class ReportGenerator:
             27017: 'MongoDB'
         }
         return services.get(port, 'Unknown')
-    
-    @staticmethod
-    def _make_serializable(obj):
-        """Convert Counter and defaultdict to regular dict for JSON serialization"""
-        if isinstance(obj, (Counter, defaultdict)):
-            return ReportGenerator._make_serializable(dict(obj))
-        elif isinstance(obj, dict):
-            new_dict = {}
-            for k, v in obj.items():
-                if isinstance(k, tuple):
-                    new_key = " <-> ".join(str(x) for x in k)
-                    new_dict[new_key] = ReportGenerator._make_serializable(v)
-                else:
-                    new_dict[str(k)] = ReportGenerator._make_serializable(v)
-            return new_dict
-        elif isinstance(obj, list):
-            return [ReportGenerator._make_serializable(item) for item in obj]
-        elif isinstance(obj, tuple):
-            return [ReportGenerator._make_serializable(item) for item in obj]
-        elif isinstance(obj, (datetime,)):
-            return obj.isoformat()
-        else:
-            return obj
-
-
-def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(
-        description='Enhanced Advanced PCAP file analyzer v2.0 with advanced DNS analysis',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Basic analysis
-  python %(prog)s capture.pcap
-  
-  # Verbose output with security scan
-  python %(prog)s capture.pcap -v --security-scan
-  
-  # Export to JSON
-  python %(prog)s capture.pcap --export json
-  
-  # Complete analysis with all outputs
-  python %(prog)s capture.pcap --export all --security-scan -v
-  
-  # Quick mode (faster, less detailed)
-  python %(prog)s capture.pcap --quick
-        '''
-    )
-    
-    parser.add_argument(
-        'pcap_file',
-        help='Path to the PCAP file to analyze'
-    )
-    parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Enable verbose output with progress indicators'
-    )
-    parser.add_argument(
-        '--export',
-        choices=['json', 'csv', 'html', 'all'],
-        help='Export analysis results to specified format(s)'
-    )
-    parser.add_argument(
-        '--security-scan',
-        action='store_true',
-        help='Enable comprehensive security pattern detection and display findings'
-    )
-    parser.add_argument(
-        '--generate-plots',
-        action='store_true',
-        help='Generate visual plots and charts (requires matplotlib)'
-    )
-    parser.add_argument(
-        '--quick',
-        action='store_true',
-        help='Quick mode - faster analysis with basic statistics only'
-    )
-    
-    args = parser.parse_args()
-    
-    if not os.path.exists(args.pcap_file):
-        print(f"❌ Error: File '{args.pcap_file}' not found")
-        sys.exit(1)
-    
-    file_size = os.path.getsize(args.pcap_file) / (1024 * 1024)
-    if args.verbose:
-        print(f"\n{'=' * 80}")
-        print(f"🔍 Starting PCAP Analysis v2.0")
-        print(f"{'=' * 80}")
-        print(f"📁 File: {args.pcap_file}")
-        print(f"📊 Size: {file_size:.2f} MB")
-        if args.quick:
-            print(f"⚡ Mode: Quick (basic statistics only)")
-        if not TLDEXTRACT_AVAILABLE:
-            print(f"⚠️  Warning: tldextract not installed. TLD analysis will be basic.")
-            print(f"   Install with: pip install tldextract")
-        print(f"{'=' * 80}\n")
-    
-    analyzer = PCAPAnalyzer(args.pcap_file, verbose=args.verbose, quick_mode=args.quick)
-    
-    if not analyzer.load_packets():
-        sys.exit(1)
-    
-    if args.verbose:
-        print("\n🔬 Analyzing packets...")
-    stats = analyzer.analyze()
-    
-    if not stats:
-        print("❌ Error: Analysis failed")
-        sys.exit(1)
-    
-    reporter = ReportGenerator(stats, args.pcap_file)
-    
-    reporter.print_statistics()
-    
-    if args.security_scan:
-        reporter.print_security_findings()
-    
-    if args.export:
-        print(f"\n📤 Exporting results...")
-        if args.export == 'all':
-            reporter.export_json()
-            reporter.export_csv()
-            reporter.export_html()
-
-        elif args.export == 'json':
-            reporter.export_json()
-        elif args.export == 'csv':
-            reporter.export_csv()
-        elif args.export == 'html':
-            reporter.export_html()
-    
-    if args.generate_plots:
-        print(f"\n📊 Generating visualizations...")
-        reporter.generate_plots()
-    
-    if args.verbose:
-        print(f"\n{'=' * 80}")
-        print(f"✅ Analysis completed successfully!")
-        print(f"{'=' * 80}\n")
-
-
-if __name__ == "__main__":
-    main()

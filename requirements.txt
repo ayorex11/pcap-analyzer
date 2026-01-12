@@ -1,5 +1,10 @@
-scapy>=2.4.5
-requests>=2.25.1
+PyQt6>=6.5.0
+scapy>=2.5.0
+requests>=2.31.0
+matplotlib>=3.7.0
+pandas>=2.0.0
+numpy>=1.24.0
+tldextract>=5.1.0
 ipwhois>=1.2.0
-matplotlib>=3.3.4
-tldextract>=5.3.0
+pyyaml>=6.0
+pyqtgraph>=0.13.0

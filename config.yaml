@@ -1,0 +1,22 @@
+analysis:
+  enable_dns_analysis: true
+  enable_http_analysis: true
+  enable_security_scan: true
+  geolocation_enabled: true
+  max_packets_display: 100
+  quick_mode: false
+gui:
+  auto_export: false
+  font_size: 10
+  show_progress_bar: true
+  theme: dark
+security:
+  beacon_variance_threshold: 0.1
+  dns_entropy_threshold: 4.5
+  port_scan_threshold: 50
+  suspicious_ports:
+  - 4444
+  - 31337
+  - 1337
+  - 9999
+  syn_flood_threshold: 1000
